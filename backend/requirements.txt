@@ -1,0 +1,25 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart==0.0.9
+sqlalchemy==2.0.30
+pydantic==2.7.4
+pydantic-settings==2.3.4
+
+# AI / RAG
+langchain==0.2.6
+langchain-community==0.2.6
+chromadb==0.5.3
+openai==1.35.3
+
+# Document
+python-pptx==0.6.23
+python-docx==1.1.2
+PyPDF2==3.0.1
+Pillow==10.3.0
+
+# Speech
+faster-whisper==1.0.3
+
+# Utils
+aiofiles==24.1.0
+httpx==0.27.0
