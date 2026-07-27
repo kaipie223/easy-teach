@@ -4,16 +4,16 @@
 
 ## 技术栈
 
-| 层级 | 技术 |
-|------|------|
-| 前端 | Vue 3 + Vite + Element Plus |
-| 后端 | FastAPI (Python 3.11) |
-| 数据库 | SQLite（开发）→ PostgreSQL（上线） |
-| LLM | DeepSeek-V3 API |
-| 向量库 | ChromaDB |
-| RAG | LangChain |
-| 语音 | faster-whisper |
-| 文档 | python-pptx / python-docx |
+| 层级  | 技术                          |
+| --- | --------------------------- |
+| 前端  | Vue 3 + Vite + Element Plus |
+| 后端  | FastAPI (Python 3.11)       |
+| 数据库 | SQLite（开发）→ PostgreSQL（上线）  |
+| LLM | DeepSeek-V3 API             |
+| 向量库 | ChromaDB                    |
+| RAG | LangChain                   |
+| 语音  | faster-whisper              |
+| 文档  | python-pptx / python-docx   |
 
 ## 快速开始
 

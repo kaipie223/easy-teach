@@ -1,21 +1,34 @@
 <template>
-  <el-container class="app-container">
-    <el-header class="app-header">
-      <h1>📚 easy-teach — 多模态AI教学智能体</h1>
-    </el-header>
-    <el-main>
-      <router-view />
-    </el-main>
-  </el-container>
+  <AppLayout>
+    <RouterView />
+  </AppLayout>
 </template>
 
 <script setup>
-// App 根组件
+import { RouterView } from 'vue-router'
+import AppLayout from './components/layout/AppLayout.vue'
 </script>
 
 <style>
-body { margin: 0; font-family: 'Microsoft YaHei', sans-serif; }
-.app-header { background: #409eff; color: white; display: flex; align-items: center; }
-.app-header h1 { font-size: 20px; }
-.app-container { min-height: 100vh; }
+:root {
+  font-family: "Microsoft YaHei", "PingFang SC", "Segoe UI", Arial, sans-serif;
+  color: #111827;
+  background: #f7f9fc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
 </style>

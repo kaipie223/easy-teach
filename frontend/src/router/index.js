@@ -3,18 +3,39 @@ import { createRouter, createWebHistory } from 'vue-router'
 const routes = [
   {
     path: '/',
-    name: 'home',
-    component: () => import('../views/HomeView.vue'),
+    name: 'dashboard',
+    meta: { title: '工作台' },
+    component: () => import('../views/DashboardView.vue'),
   },
   {
-    path: '/chat',
-    name: 'chat',
-    component: () => import('../views/ChatView.vue'),
+    path: '/requirements',
+    name: 'requirements',
+    meta: { title: '需求共创' },
+    component: () => import('../views/RequirementsView.vue'),
   },
   {
-    path: '/preview/:taskId',
-    name: 'preview',
-    component: () => import('../views/PreviewView.vue'),
+    path: '/materials',
+    name: 'materials',
+    meta: { title: '资料中心' },
+    component: () => import('../views/MaterialsView.vue'),
+  },
+  {
+    path: '/blueprint',
+    name: 'blueprint',
+    meta: { title: '教学蓝图' },
+    component: () => import('../views/BlueprintView.vue'),
+  },
+  {
+    path: '/editor',
+    name: 'editor',
+    meta: { title: '成果编辑' },
+    component: () => import('../views/EditorView.vue'),
+  },
+  {
+    path: '/exports',
+    name: 'exports',
+    meta: { title: '导出与版本' },
+    component: () => import('../views/ExportsView.vue'),
   },
 ]
 

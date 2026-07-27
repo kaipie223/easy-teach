@@ -23,3 +23,6 @@ Thumbs.db
 
 # Uploads
 uploads/
+
+# Local run logs and screenshots
+.run-logs/
