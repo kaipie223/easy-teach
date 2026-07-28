@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  frontend:
+    image: kaipie/easy-teach-frontend:latest
+    volumes:
+      - .:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    command: sleep infinity
+    working_dir: /app
+    environment:
+      - NODE_ENV=development
+
+  backend:
+    image: kaipie/easy-teach-backend:latest
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
