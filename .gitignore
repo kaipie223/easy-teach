@@ -23,3 +23,13 @@ Thumbs.db
 
 # Uploads
 uploads/
+backend/uploads/
+
+# Runtime data and generated files
+data/
+generated/
+backend/data/
+backend/generated/
+
+# Local run logs and screenshots
+.run-logs/
