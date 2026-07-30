@@ -33,3 +33,6 @@ backend/generated/
 
 # Local run logs and screenshots
 .run-logs/
+
+# ChromaDB
+chroma_data/
