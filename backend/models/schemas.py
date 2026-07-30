@@ -42,7 +42,7 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     session_id: str
     message: str
-    history: list[ChatMessage] = []
+    history: list[ChatMessage] = Field(default_factory=list)
 
 
 class IntentResult(BaseModel):
@@ -50,11 +50,11 @@ class IntentResult(BaseModel):
     subject: Subject | None = None
     grade: Grade | None = None
     topic: str = ""
-    keywords: list[str] = []
+    keywords: list[str] = Field(default_factory=list)
     lesson_type: str = ""          # 新课 / 复习课 / 习题课
     style: str = ""                # 严肃 / 活泼 / 互动
     confidence: float = 0.0
-    missing_info: list[str] = []   # AI 还需要追问的字段
+    missing_info: list[str] = Field(default_factory=list)   # AI 还需要追问的字段
 
 
 class ChatResponse(BaseModel):
@@ -72,7 +72,7 @@ class ReferenceMaterial(BaseModel):
     file_type: str                # pdf / docx / image / video
     extracted_text: str
     page_count: int = 1
-    metadata: dict = {}
+    metadata: dict = Field(default_factory=dict)
 
 
 class UploadResponse(BaseModel):
@@ -89,7 +89,7 @@ class RAGDocument(BaseModel):
     content: str
     source: str
     score: float
-    metadata: dict = {}
+    metadata: dict = Field(default_factory=dict)
 
 
 # ── 课件生成 ───────────────────────────────────────
@@ -98,8 +98,8 @@ class GenerateRequest(BaseModel):
     """M5 输入 — 课件生成请求"""
     session_id: str
     intent: IntentResult
-    references: list[str] = []     # file_id 列表
-    rag_docs: list[str] = []       # doc_id 列表
+    references: list[str] = Field(default_factory=list)     # file_id 列表
+    rag_docs: list[str] = Field(default_factory=list)       # doc_id 列表
     extra_instructions: str = ""
 
 
@@ -124,3 +124,28 @@ class FeedbackRequest(BaseModel):
 class SpeechResponse(BaseModel):
     text: str
     duration_seconds: float
+
+
+class FeedbackResponse(BaseModel):
+    task_id: str
+    status: str
+
+
+# ── 系统 / 错误响应 ───────────────────────────────────────────
+
+class HealthResponse(BaseModel):
+    app: str
+    version: str
+    environment: str
+    status: str
+
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+    details: dict | list | str | None = None
+    request_id: str
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorBody

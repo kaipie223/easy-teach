@@ -1,7 +1,10 @@
-"""M2 — 文件上传与多模态解析 API"""
+"""M2 - File upload and multimodal parsing API."""
 
-from fastapi import APIRouter, UploadFile, File
+from uuid import uuid4
 
+from fastapi import APIRouter, File, UploadFile
+
+from core.errors import ApiError
 from models.schemas import UploadResponse
 
 router = APIRouter()
@@ -9,13 +12,11 @@ router = APIRouter()
 
 @router.post("/file", response_model=UploadResponse)
 async def upload_file(file: UploadFile = File(...)):
-    """
-    上传 PDF/Word/图片/视频，后台解析提取文本。
-    由 M2 模块（赵钰洁 + 姜文杰 + 潘卓然）实现。
-    """
-    # TODO: 保存文件 → 调用解析器 → 存入数据库
+    if not file.filename:
+        raise ApiError("Uploaded file name is missing.", code="invalid_file", status_code=400)
+
     return UploadResponse(
-        file_id="placeholder",
-        file_name=file.filename or "unknown",
-        status="uploaded",
+        file_id=str(uuid4()),
+        file_name=file.filename,
+        status="accepted",
     )
