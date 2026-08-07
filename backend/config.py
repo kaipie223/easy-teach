@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Runtime storage
     data_dir: Path = Path("./data")
     upload_dir: Path = Path("./uploads")
-    generated_dir: Path = Path("./generated")
+    output_dir: Path = Path("./output")
     max_upload_size_mb: int = 50
 
     # ChromaDB
