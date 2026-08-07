@@ -7,7 +7,7 @@ def ensure_runtime_directories() -> None:
     paths: list[Path] = [
         settings.data_dir,
         settings.upload_dir,
-        settings.generated_dir,
+        settings.output_dir,
         settings.chroma_persist_dir,
     ]
 

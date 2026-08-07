@@ -1,3 +1,5 @@
+"""Easy-Teach 后端入口 — FastAPI 应用"""
+
 import logging
 import time
 import uuid
@@ -7,11 +9,13 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
-from api import chat, upload, generate, export, speech
-from core.errors import register_exception_handlers
-from core.logging import configure_logging
-from core.runtime import ensure_runtime_directories
-from models.schemas import HealthResponse
+from core import configure_logging, ensure_runtime_directories, register_exception_handlers
+from db.database import Base, engine
+from routers import chat, export, generate, session, speech, upload
+from schemas import HealthResponse
+
+# 导入所有 ORM 模型，确保它们注册到 Base.metadata
+import models  # noqa: F401 — 触发 models/__init__.py 中的全部注册
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -20,6 +24,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_runtime_directories()
+    Base.metadata.create_all(bind=engine)
     logger.info("Starting %s %s", settings.app_name, settings.app_version)
     yield
     logger.info("Stopping %s", settings.app_name)
@@ -54,6 +59,7 @@ async def add_request_context(request: Request, call_next):
     )
     return response
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
@@ -62,11 +68,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
-app.include_router(upload.router, prefix="/api/upload", tags=["upload"])
-app.include_router(generate.router, prefix="/api/generate", tags=["generate"])
-app.include_router(export.router, prefix="/api/export", tags=["export"])
-app.include_router(speech.router, prefix="/api/speech", tags=["speech"])
+# 路由注册 — 统一前缀 /api/v1
+app.include_router(session.router, prefix="/api/v1/sessions", tags=["Sessions"])
+app.include_router(chat.router, prefix="/api/v1/sessions", tags=["Chat"])
+app.include_router(upload.router, prefix="/api/v1", tags=["Files"])
+app.include_router(generate.router, prefix="/api/v1", tags=["Generation"])
+app.include_router(export.router, prefix="/api/v1", tags=["Export"])
+app.include_router(speech.router, prefix="/api/v1/speech", tags=["Speech"])
 
 
 @app.get("/", response_model=HealthResponse)
