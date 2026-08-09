@@ -8,21 +8,20 @@ sys.path.insert(0, os.path.join(_project_root, "backend"))
 
 
 def _extract_pdf(path):
-    from gen.parse.pdf import parse_smart_pdf
-    result = parse_smart_pdf(path)
-    if result.get("status") == "success":
-        return result.get("data", "")
-    print(f"[loader] PDF 解析失败: {result.get('message')}")
-    return ""
+    import fitz
+    texts = []
+    doc = fitz.open(path)
+    for page in doc:
+        t = page.get_text()
+        if t.strip():
+            texts.append(t)
+    doc.close()
+    return "\n\n".join(texts)
 
 
 def _extract_docx(path):
-    from gen.parse.doc import parse_comprehensive_word
-    result = parse_comprehensive_word(path)
-    if result.get("status") == "success":
-        return result.get("data", "")
-    print(f"[loader] DOCX 解析失败: {result.get('message')}")
-    return ""
+    from docx import Document
+    return "\n".join(p.text for p in Document(path).paragraphs if p.text.strip())
 
 
 def _extract_txt(path):
