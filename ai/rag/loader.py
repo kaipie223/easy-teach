@@ -2,24 +2,33 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, "backend"))
+
 
 def _extract_pdf(path):
-    from PyPDF2 import PdfReader
-    texts = []
-    for page in PdfReader(path).pages:
-        t = page.extract_text()
-        if t:
-            texts.append(t)
-    return chr(10).join(texts)
+    from gen.parse.pdf import parse_smart_pdf
+    result = parse_smart_pdf(path)
+    if result.get("status") == "success":
+        return result.get("data", "")
+    print(f"[loader] PDF 解析失败: {result.get('message')}")
+    return ""
+
 
 def _extract_docx(path):
-    from docx import Document
-    return chr(10).join(p.text for p in Document(path).paragraphs if p.text.strip())
+    from gen.parse.doc import parse_comprehensive_word
+    result = parse_comprehensive_word(path)
+    if result.get("status") == "success":
+        return result.get("data", "")
+    print(f"[loader] DOCX 解析失败: {result.get('message')}")
+    return ""
+
 
 def _extract_txt(path):
     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
         return f.read()
+
 
 _HANDLERS = {'.pdf': _extract_pdf, '.docx': _extract_docx, '.txt': _extract_txt}
 

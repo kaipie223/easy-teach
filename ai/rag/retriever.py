@@ -1,8 +1,13 @@
 """RAGRetriever — 语义检索知识库"""
 
 import os
+import sys
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, "backend"))
+
 import chromadb
-from backend.models.schemas import RAGDocument
+from schemas import RAGDocument
 
 
 class RAGRetriever:
@@ -30,11 +35,9 @@ class RAGRetriever:
             score = 1.0 - min(distance[i] if isinstance(distance, list) else distance, 1.0)
 
             docs.append(RAGDocument(
-                doc_id=doc_id,
                 content=content,
                 source=meta.get("source", "unknown"),
                 score=round(score, 4),
-                metadata={"chunk_index": meta.get("chunk_index", -1)},
             ))
 
         return docs
