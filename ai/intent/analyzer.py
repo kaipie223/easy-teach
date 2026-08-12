@@ -4,14 +4,30 @@ import json
 import os
 import re
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, "backend"))
 
 from openai import OpenAI
-from backend.models.schemas import IntentResult
+from schemas import IntentResult, KnowledgePoint
 from ai.intent.state import IntentStateMachine, State
 
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
+
+
+def _parse_knowledge_points(raw_kps: list[dict]) -> list[KnowledgePoint]:
+    return [
+        KnowledgePoint(
+            order=k.get("order", i + 1),
+            title=k.get("title", ""),
+            difficulty=k.get("difficulty", "basic"),
+            key_points=k.get("key_points", []),
+            examples=k.get("examples", []),
+            estimated_minutes=k.get("estimated_minutes", 5),
+        )
+        for i, k in enumerate(raw_kps)
+    ]
 
 
 def _load_prompt(name: str) -> str:
@@ -67,12 +83,8 @@ class IntentAnalyzer:
             raw = self._call_llm_analyze(history_text)
         except Exception as e:
             return IntentResult(
-                topic="",
+                teaching_goal="",
                 missing_info=[f"LLM调用失败: {str(e)}"],
-                confidence=0.0,
-                style="",
-                keywords=[],
-                lesson_type="",
             )
 
         session["intent_raw"] = raw
@@ -82,47 +94,61 @@ class IntentAnalyzer:
         if state == State.PROBING:
             follow_up = self._gen_follow_up(raw)
             return IntentResult(
-                topic=raw.get("course_name", ""),
-                keywords=[kp.get("title", "") for kp in raw.get("knowledge_points", [])],
-                style=raw.get("style_preference", ""),
-                confidence=0.5,
+                teaching_goal=raw.get("teaching_goal", ""),
+                target_audience=raw.get("target_audience", ""),
+                duration_minutes=raw.get("duration_minutes", 45),
+                knowledge_points=_parse_knowledge_points(raw.get("knowledge_points", [])),
+                logic_flow=raw.get("logic_flow", []),
+                style_preference=raw.get("style_preference", ""),
+                is_complete=False,
                 missing_info=raw.get("missing_info", []),
+                follow_up_question=follow_up.get("question_text", ""),
             )
 
         if state == State.CONFIRMING:
             confirm = self._gen_confirm(raw)
             return IntentResult(
-                topic=raw.get("course_name", ""),
-                keywords=[kp.get("title", "") for kp in raw.get("knowledge_points", [])],
-                style=raw.get("style_preference", ""),
-                confidence=0.85,
+                teaching_goal=raw.get("teaching_goal", ""),
+                target_audience=raw.get("target_audience", ""),
+                duration_minutes=raw.get("duration_minutes", 45),
+                knowledge_points=_parse_knowledge_points(raw.get("knowledge_points", [])),
+                logic_flow=raw.get("logic_flow", []),
+                style_preference=raw.get("style_preference", ""),
+                is_complete=True,
                 missing_info=[],
+                confirm_summary=confirm.get("summary", ""),
             )
 
         # LOCKED state — 返回锁定的意图
         locked = session.get("locked_intent", raw)
         return IntentResult(
-            topic=locked.get("course_name", ""),
-            keywords=[kp.get("title", "") for kp in locked.get("knowledge_points", [])],
-            style=locked.get("style_preference", ""),
-            confidence=1.0,
+            teaching_goal=locked.get("teaching_goal", ""),
+            target_audience=locked.get("target_audience", ""),
+            duration_minutes=locked.get("duration_minutes", 45),
+            knowledge_points=_parse_knowledge_points(locked.get("knowledge_points", [])),
+            logic_flow=locked.get("logic_flow", []),
+            style_preference=locked.get("style_preference", ""),
+            is_complete=True,
             missing_info=[],
         )
 
     def lock_intent(self, session_id: str) -> IntentResult:
         session = self.sessions.get(session_id)
         if not session:
-            return IntentResult(topic="", missing_info=["会话不存在"])
+            return IntentResult(missing_info=["会话不存在"])
 
         session["state_machine"].transition(is_complete=True, locked=True)
         session["locked_intent"] = session["intent_raw"]
 
         raw = session["locked_intent"]
         return IntentResult(
-            topic=raw.get("course_name", ""),
-            keywords=[kp.get("title", "") for kp in raw.get("knowledge_points", [])],
-            style=raw.get("style_preference", ""),
-            confidence=1.0,
+            teaching_goal=raw.get("teaching_goal", ""),
+            target_audience=raw.get("target_audience", ""),
+            duration_minutes=raw.get("duration_minutes", 45),
+            knowledge_points=_parse_knowledge_points(raw.get("knowledge_points", [])),
+            logic_flow=raw.get("logic_flow", []),
+            style_preference=raw.get("style_preference", ""),
+            is_complete=True,
             missing_info=[],
         )
 
@@ -130,7 +156,7 @@ class IntentAnalyzer:
         """根据教师修改意见更新意图"""
         session = self.sessions.get(session_id)
         if not session:
-            return IntentResult(topic="", missing_info=["会话不存在"])
+            return IntentResult(missing_info=["会话不存在"])
 
         session["messages"].append({"role": "user", "content": f"请修改：{modification_text}"})
         return self.analyze(session_id, [])

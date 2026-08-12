@@ -2,24 +2,32 @@
 
 import os
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, _project_root)
+sys.path.insert(0, os.path.join(_project_root, "backend"))
+
 
 def _extract_pdf(path):
-    from PyPDF2 import PdfReader
+    import fitz
     texts = []
-    for page in PdfReader(path).pages:
-        t = page.extract_text()
-        if t:
+    doc = fitz.open(path)
+    for page in doc:
+        t = page.get_text()
+        if t.strip():
             texts.append(t)
-    return chr(10).join(texts)
+    doc.close()
+    return "\n\n".join(texts)
+
 
 def _extract_docx(path):
     from docx import Document
-    return chr(10).join(p.text for p in Document(path).paragraphs if p.text.strip())
+    return "\n".join(p.text for p in Document(path).paragraphs if p.text.strip())
+
 
 def _extract_txt(path):
     with open(path, 'r', encoding='utf-8', errors='ignore') as f:
         return f.read()
+
 
 _HANDLERS = {'.pdf': _extract_pdf, '.docx': _extract_docx, '.txt': _extract_txt}
 

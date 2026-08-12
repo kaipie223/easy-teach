@@ -1,13 +1,6 @@
-"""M1 — 教学意图分析引擎
+"""M1 — 教学意图理解引擎"""
 
-调用 DeepSeek-V3 API 分析教师消息，输出结构化的教学意图。
-"""
-
-import json
-import logging
-
-from openai import OpenAI
-
+import asyncio
 from config import settings
 from schemas import IntentResult, KnowledgePoint
 
@@ -49,9 +42,11 @@ INTENT_SYSTEM_PROMPT = """你是一个教学意图分析助手。根据教师的
 3. knowledge_points 至少包含 2-5 个知识点。
 """
 
+_analyzer = IntentAnalyzer(
+    api_key=settings.deepseek_api_key,
+    base_url=settings.deepseek_base_url,
+)
 
-class IntentAnalyzer:
-    """意图分析器 — 单例，后端启动时初始化一次。"""
 
     def __init__(self):
         self._client = None
@@ -185,15 +180,10 @@ class IntentAnalyzer:
 _intent_analyzer: IntentAnalyzer | None = None
 
 
-def get_intent_analyzer() -> IntentAnalyzer:
-    global _intent_analyzer
-    if _intent_analyzer is None:
-        _intent_analyzer = IntentAnalyzer()
-    return _intent_analyzer
+def get_raw_intent(session_id: str) -> dict:
+    return _analyzer.get_raw_intent(session_id)
 
 
-async def analyze_intent(message: str, history: list[dict]) -> dict:
-    """便捷函数 — 调用意图分析器。"""
-    analyzer = get_intent_analyzer()
-    result = analyzer.analyze("", history + [{"role": "user", "content": message}])
+def lock_intent(session_id: str) -> dict:
+    result = _analyzer.lock_intent(session_id)
     return result.model_dump()
