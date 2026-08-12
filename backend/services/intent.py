@@ -13,6 +13,18 @@ from schemas import IntentResult, KnowledgePoint
 
 logger = logging.getLogger(__name__)
 
+# ── 模块级意图缓存 ────────────────────────────────────────
+# 存储每个 session 最近一次分析出的完整 IntentResult。
+# 后续 lock_intent() 从此缓存读取，供课件生成使用。
+_intent_cache: dict[str, IntentResult] = {}
+
+
+def _cache_intent(session_id: str, result: IntentResult) -> None:
+    """将意图结果存入缓存。"""
+    _intent_cache[session_id] = result
+    logger.info("Intent cached for session %s (complete=%s)", session_id, result.is_complete)
+
+
 INTENT_SYSTEM_PROMPT = """你是一个教学意图分析助手。根据教师的备课对话，提取结构化的教学意图。
 
 请严格按以下 JSON Schema 返回（只返回 JSON，不要其他内容）：
@@ -80,7 +92,9 @@ class IntentAnalyzer:
                 if raw.endswith("```"):
                     raw = raw[:-3]
             data = json.loads(raw)
-            return self._parse_intent(data)
+            result = self._parse_intent(data)
+            _cache_intent(session_id, result)  # 缓存成功的意图分析结果
+            return result
         except json.JSONDecodeError:
             logger.warning("Failed to parse intent JSON, returning raw response")
             return IntentResult(
@@ -96,8 +110,51 @@ class IntentAnalyzer:
             )
 
     def lock_intent(self, session_id: str) -> IntentResult:
-        """教师确认后锁定意图。此处可扩展为从 DB 读取已确认的意图。"""
-        return IntentResult(is_complete=True)
+        """教师确认后锁定意图 — 优先从缓存读取，降级从数据库聊天记录重建。
+
+        课件生成环节调用此方法获取已确认的教学意图，
+        保证课件内容基于真实分析结果，而非空壳默认值。
+        """
+        # 1. 优先从内存缓存读取（同一进程内的最近分析结果）
+        cached = _intent_cache.get(session_id)
+        if cached and cached.is_complete:
+            logger.info("Intent locked from cache for session %s", session_id)
+            return cached
+        if cached:
+            logger.info("Intent found in cache but incomplete for session %s", session_id)
+            return cached
+
+        # 2. 缓存未命中 — 从数据库聊天记录重建（服务重启后恢复）
+        try:
+            from db.database import SessionLocal
+            from models.session import ChatMessage
+
+            db = SessionLocal()
+            try:
+                messages = (
+                    db.query(ChatMessage)
+                    .filter(ChatMessage.session_id == session_id)
+                    .order_by(ChatMessage.created_at.asc())
+                    .all()
+                )
+                if messages:
+                    history = [
+                        {"role": m.role, "content": m.content} for m in messages
+                    ]
+                    result = self.analyze(session_id, history)
+                    logger.info("Intent rebuilt from DB for session %s", session_id)
+                    return result
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Failed to rebuild intent from DB for session %s", session_id)
+
+        # 3. 兜底 — 返回空的未完成意图，让下游用默认值继续
+        logger.warning("No intent found for session %s, returning empty fallback", session_id)
+        return IntentResult(
+            is_complete=True,
+            missing_info=["意图数据丢失，使用默认参数生成"],
+        )
 
     def _parse_intent(self, data: dict) -> IntentResult:
         kps = [
