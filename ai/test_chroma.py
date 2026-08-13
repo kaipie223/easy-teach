@@ -1,30 +1,43 @@
-"""验证 ChromaDB 可用"""
+"""验证 ChromaDB + 中文 embedding 检索精度"""
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import chromadb
-from chromadb.config import Settings
+from ai.rag.retriever import RAGRetriever
 
 PERSIST_DIR = os.path.join(os.path.dirname(__file__), "..", "chroma_data")
 
-client = chromadb.PersistentClient(path=PERSIST_DIR)
-collection = client.get_or_create_collection("test_collection")
+retriever = RAGRetriever(PERSIST_DIR)
 
-collection.add(
-    documents=["Python 是一种广泛使用的解释型、高级和通用的编程语言。它由吉多·范罗苏姆创建，于1991年首次发布。"],
-    metadatas=[{"source": "test", "chunk_index": 0}],
-    ids=["test_1"],
-)
+# 5 个教学查询，覆盖不同教材
+TEST_QUERIES = [
+    ("Python列表常用方法", ["Python基础教程"]),
+    ("二叉树的遍历方式", ["数据结构"]),
+    ("TCP三次握手过程", ["计算机网络"]),
+    ("监督学习和无监督学习的区别", ["机器学习"]),
+    ("Python函数的参数传递", ["Python基础教程"]),
+]
 
-results = collection.query(query_texts=["Python是什么"], n_results=3)
+print("=== ChromaDB 检索精度测试（中文 embedding） ===\n")
+total_correct = 0
+total_checks = 0
 
-print("=== ChromaDB 测试 ===")
-print(f"持久化目录: {PERSIST_DIR}")
-print(f"检索结果数量: {len(results['documents'][0])}")
-for i, (doc, meta, dist) in enumerate(zip(
-    results["documents"][0], results["metadatas"][0], results["distances"][0]
-)):
-    print(f"  [{i+1}] 内容: {doc[:80]}...")
-    print(f"      来源: {meta.get('source', 'unknown')}, 距离: {dist:.4f}")
-print("=== 测试通过 ===")
+for query, expected_sources in TEST_QUERIES:
+    results = retriever.search(query, top_k=3)
+    print(f"查询: {query}")
+    correct = 0
+    for i, r in enumerate(results):
+        hit = any(es in r.source for es in expected_sources)
+        mark = "✓" if hit else "✗"
+        if hit:
+            correct += 1
+        print(f"  [{i+1}] {mark} {r.source} (score={r.score:.4f})")
+        print(f"      {r.content[:100]}...")
+    precision = correct / len(results) if results else 0
+    total_correct += correct
+    total_checks += len(results)
+    print(f"  Precision@3: {correct}/3 = {precision:.0%}\n")
+
+overall = total_correct / total_checks if total_checks else 0
+print(f"总体 Precision@3: {total_correct}/{total_checks} = {overall:.0%}")
+print("=== 测试通过 ===" if overall >= 0.6 else f"=== 未达 60% 阈值，当前 {overall:.0%} ===")

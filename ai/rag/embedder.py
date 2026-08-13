@@ -1,7 +1,11 @@
-"""向量化器 — 将文本块写入 ChromaDB"""
+"""向量化器 — 将文本块写入 ChromaDB（中文优化）"""
 
 import os
 import chromadb
+from chromadb.utils import embedding_functions
+
+# 中文优化的 embedding 模型
+EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 
 
 def build_index(chunks: list[dict], persist_dir: str,
@@ -11,6 +15,10 @@ def build_index(chunks: list[dict], persist_dir: str,
     """
     os.makedirs(persist_dir, exist_ok=True)
     client = chromadb.PersistentClient(path=persist_dir)
+
+    ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name=EMBEDDING_MODEL,
+    )
 
     # 删除旧 collection 后重建（全量重建模式）
     try:
@@ -22,6 +30,7 @@ def build_index(chunks: list[dict], persist_dir: str,
     collection = client.create_collection(
         name=collection_name,
         metadata={"description": "easy-teach 教学知识库"},
+        embedding_function=ef,
     )
 
     if not chunks:
