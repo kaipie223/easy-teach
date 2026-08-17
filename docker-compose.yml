@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   frontend:
     image: kaipie/easy-teach-frontend:latest
@@ -15,7 +13,15 @@ services:
 
   backend:
     image: kaipie/easy-teach-backend:latest
+    working_dir: /app
+    command: sleep infinity
+    volumes:
+      - .:/app
+      - pip_cache:/root/.cache/pip
     ports:
       - "8000:8000"
     environment:
       - PYTHONUNBUFFERED=1
+
+volumes:
+  pip_cache:

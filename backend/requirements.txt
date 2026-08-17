@@ -9,6 +9,7 @@ pydantic-settings==2.3.4
 langchain==0.2.6
 langchain-community==0.2.6
 chromadb==0.5.3
+sentence-transformers>=2.6.0
 openai==1.35.3
 
 # Document

@@ -7,7 +7,10 @@ sys.path.insert(0, _p)
 sys.path.insert(0, os.path.join(_p, 'backend'))
 
 import chromadb
+from chromadb.utils import embedding_functions
 from schemas import RAGDocument
+
+EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 
 
 def _is_chinese(ch):
@@ -49,7 +52,12 @@ class RAGRetriever:
         self.vector_weight = vector_weight
         self.kw_weight = 1.0 - vector_weight
         self.client = chromadb.PersistentClient(path=chroma_persist_dir)
-        self.collection = self.client.get_collection(collection_name)
+        self.ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name=EMBEDDING_MODEL,
+        )
+        self.collection = self.client.get_collection(
+            collection_name, embedding_function=self.ef,
+        )
         self._all_docs = self._load_all_docs()
 
     def _load_all_docs(self):
