@@ -7,11 +7,14 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from sqlalchemy.orm import Session as DBSession
 
-from config import settings
-from core.errors import ApiError
-from db.database import get_db
-from models.file import FileRecord
-from schemas import FileInfo
+from backend.config import settings
+from backend.core.errors import ApiError
+from backend.core.ownership import get_file_for_user, get_session_for_user
+from backend.core.security import get_optional_current_user
+from backend.db.database import get_db
+from backend.models.file import FileRecord
+from backend.models.user import User
+from backend.schemas import FileInfo
 
 router = APIRouter()
 
@@ -43,6 +46,7 @@ async def upload_file(
     session_id: str = Form(...),
     ref_description: str = Form(""),
     db: DBSession = Depends(get_db),
+    user: User | None = Depends(get_optional_current_user),
 ):
     if not file.filename:
         raise ApiError("文件名为空", code="invalid_file", status_code=400)
@@ -57,6 +61,7 @@ async def upload_file(
         )
 
     file_type = _detect_file_type(file.filename)
+    session = get_session_for_user(db, session_id, user)
 
     # 保存文件到磁盘 — 强制提取纯净文件名，杜绝路径遍历攻击
     safe_filename = Path(file.filename).name
@@ -65,13 +70,24 @@ async def upload_file(
     stored_path.parent.mkdir(parents=True, exist_ok=True)
 
     content = await file.read()
+    max_size = settings.max_upload_size_mb * 1024 * 1024
+    if len(content) > max_size:
+        raise ApiError(
+            f"文件超过 {settings.max_upload_size_mb} MB 限制",
+            code="file_too_large",
+            status_code=413,
+            details={"max_bytes": max_size, "actual_bytes": len(content)},
+            suggested_action="请压缩文件或拆分后重新上传",
+        )
     stored_path.write_bytes(content)
     size_kb = round(len(content) / 1024, 2)
 
     # 记录到数据库 — original_name 保留用户原始文件名用于展示
     record = FileRecord(
         file_id=file_id,
-        session_id=session_id,
+        user_id=session.user_id,
+        project_id=session.project_id,
+        session_id=session.session_id,
         original_name=safe_filename,
         file_type=file_type,
         stored_path=str(stored_path),
@@ -94,10 +110,12 @@ async def upload_file(
 
 
 @router.get("/files/{file_id}", response_model=FileInfo)
-def get_file_info(file_id: str, db: DBSession = Depends(get_db)):
-    f = db.query(FileRecord).filter(FileRecord.file_id == file_id).first()
-    if not f:
-        raise ApiError("文件不存在", code="FILE_NOT_FOUND", status_code=404)
+def get_file_info(
+    file_id: str,
+    db: DBSession = Depends(get_db),
+    user: User | None = Depends(get_optional_current_user),
+):
+    f = get_file_for_user(db, file_id, user)
     return FileInfo(
         file_id=f.file_id,
         original_name=f.original_name,

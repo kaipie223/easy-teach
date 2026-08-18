@@ -3,13 +3,9 @@
 import json
 import os
 import re
-import sys
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, _project_root)
-sys.path.insert(0, os.path.join(_project_root, "backend"))
 
 from openai import OpenAI
-from schemas import IntentResult, RAGDocument
+from backend.schemas import IntentResult, RAGDocument
 
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")

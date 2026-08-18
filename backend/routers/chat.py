@@ -1,36 +1,28 @@
-"""M1 — 对话 SSE API"""
+"""Session-oriented M0 chat endpoint backed by the M2 persistent workflow."""
 
-import json
-import logging
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session as DBSession
 
-from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from backend.core.errors import ApiError
+from backend.core.ownership import get_session_for_user
+from backend.core.security import get_optional_current_user
+from backend.db.database import get_db
+from backend.models.user import User
+from backend.schemas import ChatRequest
+from backend.services.chat import create_chat_stream
 
-from core.errors import ApiError
-from schemas import ChatRequest
-from services.orchestrator import get_orchestrator
-
-logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/{session_id}/chat")
-async def chat(session_id: str, req: ChatRequest):
-    """SSE 流式对话 — 返回 text/question/confirm 事件流。"""
+async def chat(
+    session_id: str,
+    req: ChatRequest,
+    db: DBSession = Depends(get_db),
+    user: User | None = Depends(get_optional_current_user),
+):
     message = req.message.strip()
     if not message:
         raise ApiError("消息不能为空", code="empty_message", status_code=422)
-
-    orchestrator = get_orchestrator()
-
-    async def event_stream():
-        try:
-            async for event in orchestrator.chat(session_id, message):
-                data = event.model_dump_json()
-                yield f"data: {data}\n\n"
-        except Exception:
-            logger.exception("SSE chat stream error")
-            error_event = {"event_type": "text", "content": "抱歉，处理您的消息时出错了，请重试。", "data": None}
-            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    session = get_session_for_user(db, session_id, user)
+    return await create_chat_stream(session, message, db)

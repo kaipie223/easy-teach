@@ -10,24 +10,24 @@ from typing import AsyncGenerator
 
 from sqlalchemy.orm import Session as DBSession
 
-from config import settings
-from models.task import Task
-from schemas import (
+from backend.config import settings
+from backend.models.session import Session
+from backend.models.task import Task
+from backend.schemas import (
     ChatEvent,
     GenerationInstruction,
     IntentResult,
-    KnowledgePoint,
     MessageType,
     OutputFile,
-    RAGDocument,
     ReferenceMaterial,
     TaskInfo,
     TaskStatus,
 )
-from services.intent import get_intent_analyzer
-from services.rag import search as rag_search
-from services.parser import parse_docx, parse_image, parse_pdf, parse_video
-from services.generator import generate_docx, generate_html, generate_pptx
+from backend.services.intent import get_intent_analyzer
+from backend.services.brief import brief_to_intent, get_latest_brief, normalize_content, persist_intent_result
+from backend.services.rag import search as rag_search
+from backend.services.parser import parse_docx, parse_image, parse_pdf, parse_video
+from backend.services.generator import generate_docx, generate_html, generate_pptx
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +40,37 @@ class Orchestrator:
 
     # ── 对话 ──────────────────────────────────────────
 
-    async def chat(self, session_id: str, message: str) -> AsyncGenerator[ChatEvent, None]:
+    async def chat(
+        self,
+        session_id: str,
+        message: str,
+        *,
+        history: list[dict] | None = None,
+        db: DBSession | None = None,
+        session: Session | None = None,
+    ) -> AsyncGenerator[ChatEvent, None]:
         """处理一轮对话，SSE 流式返回事件。"""
-        messages = [{"role": "user", "content": message}]
+        messages = history or [{"role": "user", "content": message}]
 
         # 1. 先发送确认收到
-        yield ChatEvent(event_type=MessageType.TEXT, content=f"收到您的消息，正在分析教学意图……")
+        yield ChatEvent(event_type=MessageType.TEXT, content="收到您的消息，正在分析教学意图……")
 
         # 2. 调用意图分析
         result = self.intent_analyzer.analyze(session_id, messages)
+        brief = None
+        if db is not None and session is not None:
+            brief, result = persist_intent_result(db, session, result)
+        brief_content = normalize_content(brief.content_json) if brief is not None else None
+        brief_payload = (
+            {
+                "brief_id": brief.brief_id,
+                "version": brief.version,
+                "status": brief.status,
+                "content": brief_content,
+            }
+            if brief is not None
+            else None
+        )
 
         # 3. 流式输出确认/追问
         if not result.is_complete:
@@ -56,26 +78,49 @@ class Orchestrator:
             yield ChatEvent(
                 event_type=MessageType.QUESTION,
                 content=result.follow_up_question or "请补充更多信息",
-                data={"missing_info": result.missing_info, "options": None, "allow_free": True},
+                data={
+                    "prompt": result.follow_up_question or "请补充更多信息",
+                    "missing_info": result.missing_info,
+                    "options": [],
+                    "allow_free": True,
+                    "brief": brief_payload,
+                },
             )
         else:
             # 信息完整 → 确认总结
             yield ChatEvent(
                 event_type=MessageType.CONFIRM,
                 content=result.confirm_summary or _build_confirm_text(result),
-                data=None,
+                data={
+                    "fields": {
+                        "topic": result.teaching_goal,
+                        "audience": result.target_audience,
+                        "duration": f"{result.duration_minutes} 分钟",
+                        "core_knowledge": "、".join(kp.title for kp in result.knowledge_points),
+                        "logic_flow": " → ".join(result.logic_flow),
+                        "teaching_focus": (brief_content or {}).get("teaching_focus", ""),
+                        "teaching_difficulties": (brief_content or {}).get("teaching_difficulties", ""),
+                        "output_types": "、".join((brief_content or {}).get("output_types", [])),
+                        "interaction_ideas": (brief_content or {}).get("interaction_ideas", ""),
+                        "style": result.style_preference,
+                    },
+                    "note": result.confirm_summary,
+                    "brief": brief_payload,
+                },
             )
 
     # ── 课件生成 ──────────────────────────────────────
 
-    def create_generation_task(self, session_id: str, db: DBSession) -> TaskInfo:
+    def create_generation_task(self, session: Session, db: DBSession) -> TaskInfo:
         """创建异步生成任务，写入数据库。"""
-        from models.session import gen_id
+        from backend.models.session import gen_id
 
         task_id = gen_id("task")
         task = Task(
             task_id=task_id,
-            session_id=session_id,
+            user_id=session.user_id,
+            project_id=session.project_id,
+            session_id=session.session_id,
             status="pending",
             progress=0,
             created_at=datetime.now(timezone.utc),
@@ -86,13 +131,14 @@ class Orchestrator:
         return TaskInfo(
             task_id=task.task_id,
             session_id=task.session_id,
+            project_id=task.project_id,
             status=TaskStatus(task.status),
             progress=task.progress,
         )
 
     def run_generation(self, task_id: str) -> None:
         """后台执行课件生成全流程 — 使用独立数据库会话，杜绝跨线程会话泄漏。"""
-        from db.database import SessionLocal
+        from backend.db.database import SessionLocal
 
         db = SessionLocal()
         try:
@@ -113,8 +159,17 @@ class Orchestrator:
             task.progress = 10
             db.commit()
 
-            # Step 1: 锁定意图
-            intent = self.intent_analyzer.lock_intent(task.session_id)
+            # Step 1: 锁定已确认 brief；匿名 M0 会话继续使用旧意图缓存。
+            confirmed_brief = (
+                get_latest_brief(db, project_id=task.project_id)
+                if task.project_id
+                else None
+            )
+            intent = (
+                brief_to_intent(confirmed_brief)
+                if confirmed_brief is not None and confirmed_brief.status == "confirmed"
+                else self.intent_analyzer.lock_intent(task.session_id)
+            )
             task.progress = 20
             db.commit()
 
@@ -159,6 +214,13 @@ class Orchestrator:
 
             # Step 6: 记录输出
             outputs = _build_outputs(pptx_path, docx_path, html_path)
+            _persist_output_files(
+                task.session_id,
+                outputs,
+                db,
+                user_id=task.user_id,
+                project_id=task.project_id,
+            )
             task.status = "completed"
             task.progress = 100
             task.outputs = [o.model_dump() for o in outputs]
@@ -205,7 +267,7 @@ def _sync(coro):
     import asyncio
 
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
     else:
@@ -217,7 +279,7 @@ def _sync(coro):
 
 def _load_references(session_id: str, db: DBSession) -> list[ReferenceMaterial]:
     """加载该会话上传的参考资料并解析。"""
-    from models.file import FileRecord
+    from backend.models.file import FileRecord
 
     files = db.query(FileRecord).filter(FileRecord.session_id == session_id).all()
     refs = []
@@ -263,3 +325,37 @@ def _build_outputs(pptx_path: str, docx_path: str, html_path: str) -> list[Outpu
                 download_url=f"/api/v1/download/{file_id}",
             ))
     return outputs
+
+
+def _persist_output_files(
+    session_id: str,
+    outputs: list[OutputFile],
+    db: DBSession,
+    *,
+    user_id: str | None = None,
+    project_id: str | None = None,
+) -> None:
+    """Register generated files so task links and the download API share one path."""
+    from backend.models.file import FileRecord
+
+    for output in outputs:
+        path = settings.output_dir / output.file_name
+        if not path.exists():
+            continue
+        existing = db.query(FileRecord).filter(FileRecord.file_id == output.file_id).first()
+        if existing:
+            continue
+        db.add(
+            FileRecord(
+                file_id=output.file_id,
+                user_id=user_id,
+                project_id=project_id,
+                session_id=session_id,
+                original_name=output.file_name,
+                file_type=output.file_type,
+                stored_path=str(path),
+                size_kb=output.size_kb,
+                ref_description="generated",
+                upload_time=datetime.now(timezone.utc),
+            )
+        )

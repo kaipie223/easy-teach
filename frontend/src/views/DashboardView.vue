@@ -3,102 +3,169 @@
     <header class="page-header">
       <div>
         <h1>工作台</h1>
-        <p>集中查看教学任务进展、待处理资料和最近导出成果。</p>
+        <p>查看你的教学项目，并从上次进度继续。</p>
       </div>
-      <div class="header-actions">
-        <el-button type="primary" @click="go('/requirements')">
-          <el-icon><Plus /></el-icon>
-          新建教学任务
-        </el-button>
-      </div>
+      <el-button type="primary" @click="go('/home')">
+        <el-icon><Plus /></el-icon>
+        新建项目
+      </el-button>
     </header>
 
-    <section class="stat-grid">
-      <article v-for="stat in dashboardStats" :key="stat.key" class="metric-card">
-        <span class="metric-icon">
-          <el-icon><component :is="stat.icon" /></el-icon>
-        </span>
-        <div>
-          <span>{{ stat.label }}</span>
-          <strong>{{ stat.value }}</strong>
-        </div>
+    <section class="stat-grid" aria-label="项目概览">
+      <article class="metric-card">
+        <span class="metric-icon"><el-icon><FolderOpened /></el-icon></span>
+        <div><span>全部项目</span><strong>{{ projects.length }}</strong></div>
+      </article>
+      <article class="metric-card">
+        <span class="metric-icon"><el-icon><CircleCheck /></el-icon></span>
+        <div><span>进行中</span><strong>{{ activeCount }}</strong></div>
+      </article>
+      <article class="metric-card">
+        <span class="metric-icon"><el-icon><Delete /></el-icon></span>
+        <div><span>已归档</span><strong>{{ deletedCount }}</strong></div>
       </article>
     </section>
 
     <section class="section-card">
       <div class="section-header">
         <div>
-          <h2>最近教学任务</h2>
-          <p>按更新时间展示当前课程生成进展。</p>
+          <h2>教学项目</h2>
+          <p>项目、会话和生成成果会绑定到当前账号。</p>
         </div>
+        <el-button text :loading="loading" @click="loadProjects">刷新</el-button>
       </div>
-      <div class="table-wrap">
+
+      <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
+      <el-skeleton v-if="loading && !projects.length" :rows="4" animated />
+      <el-empty v-else-if="!projects.length" description="还没有教学项目" />
+
+      <div v-else class="table-wrap">
         <table class="data-table">
           <thead>
             <tr>
-              <th>任务名称</th>
-              <th>课程主题</th>
-              <th>授课对象</th>
+              <th>项目名称</th>
+              <th>场景</th>
               <th>状态</th>
-              <th>更新时间</th>
+              <th>最近更新</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="task in teachingTasks" :key="task.id">
-              <td>{{ task.name }}</td>
-              <td>{{ task.subject }}</td>
-              <td>{{ task.audience }}</td>
+            <tr v-for="project in projects" :key="project.project_id">
               <td>
-                <span :class="['status-pill', statusClass(task.status)]">{{ task.status }}</span>
+                <strong>{{ project.title }}</strong>
+                <span class="project-id">{{ project.project_id }}</span>
               </td>
-              <td>{{ task.updatedAt }}</td>
+              <td>{{ project.scenario || '未设置' }}</td>
+              <td><span :class="['status-pill', project.status === 'deleted' ? 'draft' : 'running']">
+                {{ project.status === 'deleted' ? '已归档' : '进行中' }}
+              </span></td>
+              <td>{{ formatDate(project.updated_at || project.created_at) }}</td>
               <td class="link-actions">
-                <el-button link type="primary" @click="go('/blueprint')">查看</el-button>
-                <el-button link type="primary" @click="go('/requirements')">编辑</el-button>
+                <el-button v-if="project.status !== 'deleted'" link type="primary" @click="openProject(project)">
+                  {{ project.session_id ? '继续' : '开始' }}
+                </el-button>
+                <el-button v-if="project.status !== 'deleted'" link type="danger" @click="archiveProject(project)">
+                  归档
+                </el-button>
+                <el-button v-else link type="primary" @click="restore(project)">恢复</el-button>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
     </section>
-
-    <section class="section-card">
-      <div class="section-header">
-        <div>
-          <h2>最近导出</h2>
-          <p>PPT、教案和互动包的最近生成记录。</p>
-        </div>
-      </div>
-      <div class="export-grid">
-        <article v-for="item in recentExports" :key="item.id" class="file-card">
-          <strong>{{ item.name }}</strong>
-          <p class="muted">{{ item.exportedAt }} · {{ item.size }}</p>
-          <div class="header-actions">
-            <el-button type="primary" size="small" @click="go('/exports')">下载</el-button>
-            <el-button size="small" @click="go('/editor')">预览</el-button>
-          </div>
-        </article>
-      </div>
-    </section>
   </div>
 </template>
 
 <script setup>
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { dashboardStats, recentExports, teachingTasks } from '../mocks'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { CircleCheck, Delete, FolderOpened, Plus } from '@element-plus/icons-vue'
+import { deleteProject, fetchProjects, restoreProject } from '@/api'
 
 const router = useRouter()
+const projects = ref([])
+const loading = ref(false)
+const errorMessage = ref('')
+
+const activeCount = computed(() => projects.value.filter(project => project.status !== 'deleted').length)
+const deletedCount = computed(() => projects.value.filter(project => project.status === 'deleted').length)
+
+async function loadProjects() {
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    const response = await fetchProjects(true)
+    projects.value = response.data
+  } catch (error) {
+    errorMessage.value = error.response?.data?.error?.message || '项目加载失败，请重试'
+  } finally {
+    loading.value = false
+  }
+}
+
+function openProject(project) {
+  router.push(project.session_id ? `/chat/${project.session_id}` : `/home?projectId=${project.project_id}`)
+}
+
+async function archiveProject(project) {
+  try {
+    await ElMessageBox.confirm(`归档“${project.title}”？项目数据仍可恢复。`, '归档项目', {
+      confirmButtonText: '归档',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await deleteProject(project.project_id)
+    await loadProjects()
+    ElMessage.success('项目已归档')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(error.response?.data?.error?.message || '归档失败，请重试')
+    }
+  }
+}
+
+async function restore(project) {
+  try {
+    await restoreProject(project.project_id)
+    await loadProjects()
+    ElMessage.success('项目已恢复')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error?.message || '恢复失败，请重试')
+  }
+}
 
 function go(path) {
   router.push(path)
 }
 
-function statusClass(status) {
-  return {
-    进行中: 'running',
-    已完成: 'done',
-    草稿: 'draft',
-  }[status] || 'pending'
+function formatDate(value) {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime())
+    ? '未记录'
+    : date.toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' })
 }
+
+onMounted(loadProjects)
 </script>
+
+<style scoped>
+.project-id {
+  display: block;
+  margin-top: 4px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.link-actions {
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .link-actions {
+    white-space: normal;
+  }
+}
+</style>

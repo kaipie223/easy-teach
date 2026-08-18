@@ -34,8 +34,9 @@ import { ref, onBeforeUnmount } from 'vue'
 import { Microphone, Loading } from '@element-plus/icons-vue'
 import { transcribeAudio } from '@/api'
 
-defineProps({
+const props = defineProps({
   showLabel: { type: Boolean, default: false },
+  sessionId: { type: String, default: null },
 })
 
 const emit = defineEmits(['transcribed'])
@@ -71,7 +72,7 @@ async function startRecord() {
 
       const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType })
       try {
-        const res = await transcribeAudio(audioBlob)
+        const res = await transcribeAudio(audioBlob, props.sessionId)
         if (res.data?.text) {
           emit('transcribed', res.data.text)
         }

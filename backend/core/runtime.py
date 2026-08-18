@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from config import settings
+from backend.config import settings
 
 
 def ensure_runtime_directories() -> None:

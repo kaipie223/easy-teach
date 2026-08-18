@@ -16,6 +16,8 @@
 
     <!-- 对话正常 -->
     <template v-else>
+      <div class="chat-workspace">
+        <section class="chat-main">
       <!-- 顶部信息栏 -->
       <div class="chat-topbar">
         <div class="chat-topbar-left">
@@ -26,7 +28,7 @@
           <el-tag v-if="sessionId" size="small" type="info">{{ sessionId }}</el-tag>
         </div>
         <div class="chat-topbar-right">
-          <el-button size="small" text :disabled="sseActive" @click="handleGenerate">
+          <el-button size="small" text :disabled="sseActive || !canGenerate" @click="handleGenerate">
             <el-icon style="margin-right: 4px"><MagicStick /></el-icon>
             生成课件
           </el-button>
@@ -73,22 +75,40 @@
           @send="handleSend"
           @toggle-voice="toggleVoice"
         />
+        <VoiceInput
+          v-if="voiceVisible"
+          :session-id="sessionId"
+          :show-label="true"
+          @transcribed="handleVoiceTranscribed"
+        />
         <p class="chat-hint">Enter 发送 · Shift+Enter 换行</p>
+      </div>
+        </section>
+        <TeachingBriefPanel
+          v-if="projectId"
+          :brief="sessionStore.brief"
+          :saving="briefSaving"
+          :confirming="briefConfirming"
+          @save="handleBriefSave"
+          @confirm="handleConfirm"
+        />
       </div>
     </template>
   </div>
 </template>
 
 <script setup>
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, MagicStick } from '@element-plus/icons-vue'
 import { useSessionStore } from '@/stores/session'
-import { SSEClient, streamChat } from '@/utils/sse'
+import { SSEClient } from '@/utils/sse'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import QuestionCard from '@/components/chat/QuestionCard.vue'
 import ConfirmPanel from '@/components/chat/ConfirmPanel.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import VoiceInput from '@/components/chat/VoiceInput.vue'
+import TeachingBriefPanel from '@/components/chat/TeachingBriefPanel.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -101,9 +121,14 @@ const loading = ref(false)
 const sending = ref(false)
 const error = ref('')
 const sseActive = ref(false)
+const voiceVisible = ref(false)
+const briefSaving = ref(false)
+const briefConfirming = ref(false)
 
 const sessionId = ref(route.params.sessionId)
 const messages = sessionStore.messages // 直接引用 store 的响应式数组
+const projectId = computed(() => sessionStore.projectId)
+const canGenerate = computed(() => !projectId.value || sessionStore.brief?.status === 'confirmed')
 
 // ── 加载会话 ──────────────────────────────────
 
@@ -112,8 +137,11 @@ async function loadSession() {
   error.value = ''
   try {
     await sessionStore.fetchSession(sessionId.value)
+    if (projectId.value) {
+      await sessionStore.fetchBrief()
+    }
   } catch (err) {
-    error.value = err.response?.data?.detail || err.message || '加载会话失败'
+    error.value = err.response?.data?.error?.message || err.message || '加载会话失败'
   } finally {
     loading.value = false
   }
@@ -137,7 +165,7 @@ async function handleSend(text) {
   sseActive.value = true
   sending.value = false
 
-  const client = new SSEClient(`/api/sessions/${sessionId.value}/chat`, {
+  const client = new SSEClient(`/api/v1/sessions/${sessionId.value}/chat`, {
     onText: (chunk) => {
       sessionStore.appendToLastMessage(chunk)
       scrollToBottom()
@@ -186,9 +214,20 @@ function handleSkipQuestion() {
   handleSend('跳过')
 }
 
-function handleConfirm() {
-  // 确认 → 触发课件生成
-  handleGenerate()
+async function handleConfirm() {
+  if (briefConfirming.value) return
+  briefConfirming.value = true
+  error.value = ''
+  try {
+    if (projectId.value && sessionStore.brief?.status !== 'confirmed') {
+      await sessionStore.confirmBrief()
+    }
+    handleGenerate()
+  } catch (err) {
+    error.value = err.response?.data?.error?.message || '需求确认失败，请补充信息后重试'
+  } finally {
+    briefConfirming.value = false
+  }
 }
 
 function handleModify() {
@@ -199,13 +238,32 @@ function handleModify() {
 // ── 生成课件 ──────────────────────────────────
 
 function handleGenerate() {
+  if (!canGenerate.value) return
   router.push(`/blueprint`)
 }
 
 // ── 语音 ──────────────────────────────────────
 
 function toggleVoice() {
-  // TODO: M4 语音输入
+  voiceVisible.value = !voiceVisible.value
+}
+
+function handleVoiceTranscribed(text) {
+  voiceVisible.value = false
+  handleSend(text)
+}
+
+async function handleBriefSave(changes) {
+  if (!projectId.value || briefSaving.value) return
+  briefSaving.value = true
+  error.value = ''
+  try {
+    await sessionStore.updateBrief(changes)
+  } catch (err) {
+    error.value = err.response?.data?.error?.message || '保存需求确认单失败，请重试'
+  } finally {
+    briefSaving.value = false
+  }
 }
 
 // ── 滚动 ──────────────────────────────────────
@@ -248,6 +306,20 @@ if (sessionId.value) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.chat-workspace {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+.chat-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
 }
 
 .chat-status {
@@ -298,5 +370,16 @@ if (sessionId.value) {
   font-size: 12px;
   color: #9ca3af;
   text-align: center;
+}
+
+@media (max-width: 980px) {
+  .chat-workspace {
+    display: block;
+    overflow: auto;
+  }
+
+  .chat-main {
+    min-height: 560px;
+  }
 }
 </style>

@@ -1,6 +1,6 @@
 # easy-teach — 多模态AI互动式教学智能体
 
-基于 FastAPI + Vue 3 的多模态AI教学课件生成平台。
+基于 FastAPI + Vue 3 的多模态 AI 教学课件生成平台。
 
 ## 技术栈
 
@@ -20,33 +20,43 @@
 ### 后端
 
 ```bash
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --reload --port 8000
+uv sync
+uv run alembic upgrade head
+uv run uvicorn backend.main:app --reload --port 8000
 ```
+
+首次构建本地知识库：
+
+```bash
+uv run python -m ai.build_kb
+```
+
+API 健康检查：`http://localhost:8000/health`。运行目录、SQLite 数据库、
+生成文件和 Chroma 索引统一位于 `data/`，可通过 `.env` 覆盖。
 
 ### 前端
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run dev
 ```
+
+前端唯一产品工程是 `frontend/`，默认通过 Vite 代理访问 `/api/v1`。
 
 ## 项目结构
 
 ```
-easy-teach-app/
-├── backend/          # FastAPI 后端
-│   ├── api/          # 路由控制器
-│   ├── models/       # Pydantic 数据模型
-│   ├── services/     # 业务逻辑层
-│   └── db/           # 数据库配置
-├── frontend/         # Vue 3 前端
+easy-teach-dev/
+├── backend/             # FastAPI 入口、路由、模型和服务
+├── ai/                  # 意图、语音和 RAG 能力
+├── frontend/            # 唯一的 Vue 3 产品前端
 │   └── src/
-│       ├── views/    # 页面视图
-│       ├── components/  # 通用组件
-│       ├── api/      # 后端 API 封装
-│       └── stores/   # Pinia 状态管理
-└── knowledge-base/   # 知识库资料目录
+│       ├── views/       # 页面视图
+│       ├── components/  # 页面和业务组件
+│       ├── api/         # 后端 API 封装
+│       └── stores/      # Pinia 状态管理
+├── alembic/             # 数据库迁移
+├── tests/               # API 和契约测试
+└── knowledge-base/      # 本地知识库资料目录
 ```

@@ -1,10 +1,6 @@
 """文档加载器 — 遍历 knowledge-base/ 加载所有支持的文档"""
 
 import os
-import sys
-_project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, _project_root)
-sys.path.insert(0, os.path.join(_project_root, "backend"))
 
 
 def _extract_pdf(path):

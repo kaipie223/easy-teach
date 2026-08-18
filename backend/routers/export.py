@@ -6,10 +6,11 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session as DBSession
 
-from core.errors import ApiError
-from db.database import get_db
-from models.file import FileRecord
-from models.task import Task
+from backend.core.errors import ApiError
+from backend.core.ownership import get_file_for_user
+from backend.core.security import get_optional_current_user
+from backend.db.database import get_db
+from backend.models.user import User
 
 router = APIRouter()
 
@@ -23,13 +24,15 @@ CONTENT_TYPES = {
 
 
 @router.get("/download/{file_id}")
-def download_file(file_id: str, db: DBSession = Depends(get_db)):
+def download_file(
+    file_id: str,
+    db: DBSession = Depends(get_db),
+    user: User | None = Depends(get_optional_current_user),
+):
     if not file_id.strip():
         raise ApiError("file_id 不能为空", code="missing_file_id", status_code=422)
 
-    f = db.query(FileRecord).filter(FileRecord.file_id == file_id).first()
-    if not f:
-        raise ApiError("文件不存在", code="FILE_NOT_FOUND", status_code=404, details={"file_id": file_id})
+    f = get_file_for_user(db, file_id, user)
 
     path = Path(f.stored_path)
     if not path.exists():

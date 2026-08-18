@@ -1,22 +1,23 @@
-"""M1 — 教学意图理解引擎"""
+"""Teaching intent extraction service.
 
-import asyncio
-from config import settings
-from schemas import IntentResult, KnowledgePoint
+The service keeps a small in-process cache for the current generation flow.
+Database-backed message reconstruction remains the fallback after a restart.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+
+from openai import OpenAI
+
+from backend.config import settings
+from backend.schemas import IntentResult, KnowledgePoint
 
 logger = logging.getLogger(__name__)
 
-# ── 模块级意图缓存 ────────────────────────────────────────
-# 存储每个 session 最近一次分析出的完整 IntentResult。
-# 后续 lock_intent() 从此缓存读取，供课件生成使用。
 _intent_cache: dict[str, IntentResult] = {}
-
-
-def _cache_intent(session_id: str, result: IntentResult) -> None:
-    """将意图结果存入缓存。"""
-    _intent_cache[session_id] = result
-    logger.info("Intent cached for session %s (complete=%s)", session_id, result.is_complete)
-
 
 INTENT_SYSTEM_PROMPT = """你是一个教学意图分析助手。根据教师的备课对话，提取结构化的教学意图。
 
@@ -39,20 +40,32 @@ INTENT_SYSTEM_PROMPT = """你是一个教学意图分析助手。根据教师的
 规则：
 1. 如果教师信息不完整（缺少学科、年级、课时等），is_complete=false，在 missing_info 中列出，并生成一句追问。
 2. 如果信息完整，is_complete=true，在 confirm_summary 中生成确认总结。
-3. knowledge_points 至少包含 2-5 个知识点。
+3. knowledge_points 至少包含 2-5 个知识点；无法判断时保留已有信息并继续追问。
 """
 
-_analyzer = IntentAnalyzer(
-    api_key=settings.deepseek_api_key,
-    base_url=settings.deepseek_base_url,
-)
 
+def _cache_intent(session_id: str, result: IntentResult) -> None:
+    _intent_cache[session_id] = result
+    logger.info("Intent cached for session %s (complete=%s)", session_id, result.is_complete)
+
+
+def _extract_json(text: str) -> dict:
+    """Parse JSON returned directly or inside a markdown code block."""
+    raw = (text or "").strip()
+    match = re.search(r"```(?:json)?\s*(.*?)\s*```", raw, re.DOTALL | re.IGNORECASE)
+    if match:
+        raw = match.group(1).strip()
+    return json.loads(raw)
+
+
+class IntentAnalyzer:
+    """Extract and cache a structured teaching intent."""
 
     def __init__(self):
-        self._client = None
+        self._client: OpenAI | None = None
 
     @property
-    def client(self):
+    def client(self) -> OpenAI:
         if self._client is None:
             if not settings.deepseek_api_key:
                 raise ValueError("DEEPSEEK_API_KEY 未配置，请在 .env 文件中设置")
@@ -63,13 +76,17 @@ _analyzer = IntentAnalyzer(
         return self._client
 
     def analyze(self, session_id: str, messages: list[dict]) -> IntentResult:
-        """分析对话历史，返回结构化意图。"""
+        """Analyze the supplied conversation turn and return a validated result."""
         if not settings.deepseek_api_key:
-            return IntentResult(
-                teaching_goal=messages[-1]["content"] if messages else "",
+            result = IntentResult(
+                teaching_goal=messages[-1].get("content", "") if messages else "",
                 missing_info=["API Key 未配置"],
                 follow_up_question="请配置 DeepSeek API Key 后重试（在 .env 文件中设置 DEEPSEEK_API_KEY）",
             )
+            _cache_intent(session_id, result)
+            return result
+
+        raw_text = ""
         try:
             response = self.client.chat.completions.create(
                 model="deepseek-chat",
@@ -79,21 +96,17 @@ _analyzer = IntentAnalyzer(
                 ],
                 temperature=0.3,
                 max_tokens=2000,
+                response_format={"type": "json_object"},
+                timeout=30,
             )
-            raw = response.choices[0].message.content.strip()
-            # 去掉可能的 markdown 代码块标记
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
-            data = json.loads(raw)
-            result = self._parse_intent(data)
-            _cache_intent(session_id, result)  # 缓存成功的意图分析结果
+            raw_text = response.choices[0].message.content or ""
+            result = self._parse_intent(_extract_json(raw_text))
+            _cache_intent(session_id, result)
             return result
         except json.JSONDecodeError:
-            logger.warning("Failed to parse intent JSON, returning raw response")
+            logger.warning("Failed to parse intent JSON")
             return IntentResult(
-                teaching_goal=raw,
+                teaching_goal=raw_text,
                 missing_info=["无法解析结构化意图，请重新描述"],
                 follow_up_question="能否再详细描述一下您的备课需求？",
             )
@@ -105,24 +118,39 @@ _analyzer = IntentAnalyzer(
             )
 
     def lock_intent(self, session_id: str) -> IntentResult:
-        """教师确认后锁定意图 — 优先从缓存读取，降级从数据库聊天记录重建。
-
-        课件生成环节调用此方法获取已确认的教学意图，
-        保证课件内容基于真实分析结果，而非空壳默认值。
-        """
-        # 1. 优先从内存缓存读取（同一进程内的最近分析结果）
-        cached = _intent_cache.get(session_id)
-        if cached and cached.is_complete:
-            logger.info("Intent locked from cache for session %s", session_id)
-            return cached
-        if cached:
-            logger.info("Intent found in cache but incomplete for session %s", session_id)
-            return cached
-
-        # 2. 缓存未命中 — 从数据库聊天记录重建（服务重启后恢复）
+        """Return the most recent intent, rebuilding it from persisted messages if needed."""
         try:
-            from db.database import SessionLocal
-            from models.session import ChatMessage
+            from backend.db.database import SessionLocal
+            from backend.models.brief import TeachingBrief
+            from backend.services.brief import brief_to_intent
+
+            db = SessionLocal()
+            try:
+                confirmed = (
+                    db.query(TeachingBrief)
+                    .filter(
+                        TeachingBrief.session_id == session_id,
+                        TeachingBrief.status == "confirmed",
+                    )
+                    .order_by(TeachingBrief.version.desc())
+                    .first()
+                )
+                if confirmed is not None:
+                    result = brief_to_intent(confirmed)
+                    _cache_intent(session_id, result)
+                    return result
+            finally:
+                db.close()
+        except Exception:
+            logger.exception("Failed to load confirmed brief for session %s", session_id)
+
+        cached = _intent_cache.get(session_id)
+        if cached is not None:
+            return cached
+
+        try:
+            from backend.db.database import SessionLocal
+            from backend.models.session import ChatMessage
 
             db = SessionLocal()
             try:
@@ -133,10 +161,10 @@ _analyzer = IntentAnalyzer(
                     .all()
                 )
                 if messages:
-                    history = [
-                        {"role": m.role, "content": m.content} for m in messages
-                    ]
-                    result = self.analyze(session_id, history)
+                    result = self.analyze(
+                        session_id,
+                        [{"role": item.role, "content": item.content} for item in messages],
+                    )
                     logger.info("Intent rebuilt from DB for session %s", session_id)
                     return result
             finally:
@@ -144,46 +172,61 @@ _analyzer = IntentAnalyzer(
         except Exception:
             logger.exception("Failed to rebuild intent from DB for session %s", session_id)
 
-        # 3. 兜底 — 返回空的未完成意图，让下游用默认值继续
         logger.warning("No intent found for session %s, returning empty fallback", session_id)
-        return IntentResult(
+        result = IntentResult(
             is_complete=True,
             missing_info=["意图数据丢失，使用默认参数生成"],
         )
+        _cache_intent(session_id, result)
+        return result
 
-    def _parse_intent(self, data: dict) -> IntentResult:
-        kps = [
+    def update_intent(self, session_id: str, modification_text: str) -> IntentResult:
+        """Apply a free-form modification through the same extraction path."""
+        return self.analyze(session_id, [{"role": "user", "content": modification_text}])
+
+    @staticmethod
+    def _parse_intent(data: dict) -> IntentResult:
+        raw_points = data.get("knowledge_points") or []
+        knowledge_points = [
             KnowledgePoint(
-                order=k.get("order", i + 1),
-                title=k.get("title", ""),
-                difficulty=k.get("difficulty", "basic"),
-                key_points=k.get("key_points", []),
-                examples=k.get("examples", []),
-                estimated_minutes=k.get("estimated_minutes", 10),
+                order=item.get("order", index + 1),
+                title=item.get("title", ""),
+                difficulty=item.get("difficulty", "basic"),
+                key_points=item.get("key_points") or [],
+                examples=item.get("examples") or [],
+                estimated_minutes=item.get("estimated_minutes", 10),
             )
-            for i, k in enumerate(data.get("knowledge_points", []))
+            for index, item in enumerate(raw_points)
+            if isinstance(item, dict)
         ]
         return IntentResult(
             teaching_goal=data.get("teaching_goal", ""),
             target_audience=data.get("target_audience", ""),
             duration_minutes=data.get("duration_minutes", 45),
-            knowledge_points=kps,
-            logic_flow=data.get("logic_flow", []),
+            knowledge_points=knowledge_points,
+            logic_flow=data.get("logic_flow") or [],
             style_preference=data.get("style_preference", ""),
-            missing_info=data.get("missing_info", []),
+            missing_info=data.get("missing_info") or [],
             follow_up_question=data.get("follow_up_question"),
             confirm_summary=data.get("confirm_summary"),
-            is_complete=data.get("is_complete", False),
+            is_complete=bool(data.get("is_complete", False)),
         )
 
 
 _intent_analyzer: IntentAnalyzer | None = None
 
 
+def get_intent_analyzer() -> IntentAnalyzer:
+    global _intent_analyzer
+    if _intent_analyzer is None:
+        _intent_analyzer = IntentAnalyzer()
+    return _intent_analyzer
+
+
 def get_raw_intent(session_id: str) -> dict:
-    return _analyzer.get_raw_intent(session_id)
+    result = get_intent_analyzer().lock_intent(session_id)
+    return result.model_dump()
 
 
 def lock_intent(session_id: str) -> dict:
-    result = _analyzer.lock_intent(session_id)
-    return result.model_dump()
+    return get_intent_analyzer().lock_intent(session_id).model_dump()

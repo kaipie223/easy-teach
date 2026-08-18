@@ -1,11 +1,8 @@
 """一键知识库构建脚本 — E 可独立运行"""
 
-import os
-import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from backend.config import settings
 from ai.rag.loader import load_documents
 from ai.rag.splitter import split_documents
 from ai.rag.embedder import build_index
@@ -13,9 +10,8 @@ from ai.rag.retriever import RAGRetriever
 
 
 def main():
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    kb_dir = os.path.join(project_root, "knowledge-base")
-    persist_dir = os.path.join(project_root, "chroma_data")
+    kb_dir = settings.knowledge_base_dir
+    persist_dir = settings.chroma_persist_dir
 
     print("=" * 50)
     print("easy-teach 知识库构建")

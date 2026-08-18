@@ -9,6 +9,8 @@
  *   - [DONE]     → 流结束信号
  */
 
+import { getAccessToken } from '@/api'
+
 export class SSEClient {
   /**
    * @param {string} url - SSE 端点 URL
@@ -37,6 +39,7 @@ export class SSEClient {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'text/event-stream',
+          ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
         },
         body: JSON.stringify(body),
         signal: this.abortController.signal,
@@ -75,38 +78,28 @@ export class SSEClient {
 
   /** 解析 SSE 缓冲区，提取完整事件 */
   _parseBuffer() {
-    const lines = this.buffer.split('\n')
-    // 保留最后一个可能不完整的行
-    this.buffer = lines.pop() || ''
+    const blocks = this.buffer.split(/\r?\n\r?\n/)
+    this.buffer = blocks.pop() || ''
 
-    let eventType = ''
-    let dataBuffer = ''
+    for (const block of blocks) {
+      if (!block.trim()) continue
 
-    for (const line of lines) {
-      if (line.startsWith('event:')) {
-        eventType = line.slice(6).trim()
-      } else if (line.startsWith('data:')) {
-        const chunk = line.slice(5).trim()
-
-        if (chunk === '[DONE]') {
-          this.callbacks.onDone?.()
-          return
+      let eventType = 'text'
+      const dataLines = []
+      for (const line of block.split(/\r?\n/)) {
+        if (line.startsWith('event:')) {
+          eventType = line.slice(6).trim() || 'text'
+        } else if (line.startsWith('data:')) {
+          dataLines.push(line.slice(5).trimStart())
         }
-
-        dataBuffer += chunk
-      } else if (line === '') {
-        // 空行表示一个事件结束
-        if (eventType && dataBuffer) {
-          this._dispatch(eventType, dataBuffer)
-        }
-        eventType = ''
-        dataBuffer = ''
       }
-    }
 
-    // 兜底：如果只有 data 没有 event 字段
-    if (dataBuffer) {
-      this._dispatch(eventType || 'text', dataBuffer)
+      const rawData = dataLines.join('\n')
+      if (rawData === '[DONE]') {
+        this.callbacks.onDone?.()
+      } else if (rawData) {
+        this._dispatch(eventType, rawData)
+      }
     }
   }
 
@@ -121,14 +114,16 @@ export class SSEClient {
 
     switch (eventType) {
       case 'question':
-        this.callbacks.onQuestion?.(parsed)
+        this.callbacks.onQuestion?.(parsed.data || parsed)
         break
       case 'confirm':
-        this.callbacks.onConfirm?.(parsed)
+        this.callbacks.onConfirm?.(parsed.data || parsed)
         break
       case 'text':
       default:
-        this.callbacks.onText?.(typeof parsed === 'string' ? parsed : parsed.text || rawData)
+        this.callbacks.onText?.(
+          typeof parsed === 'string' ? parsed : parsed.content || parsed.text || rawData,
+        )
         break
     }
   }
@@ -142,7 +137,7 @@ export class SSEClient {
  * @returns {SSEClient} 返回 client 实例，可用于 disconnect
  */
 export function streamChat(sessionId, message, callbacks) {
-  const client = new SSEClient(`/api/sessions/${sessionId}/chat`, callbacks)
+  const client = new SSEClient(`/api/v1/sessions/${sessionId}/chat`, callbacks)
   client.connect({ message })
   return client
 }
