@@ -1,12 +1,16 @@
 <template>
-  <AppLayout>
+  <AppLayout v-if="!route.meta.public">
     <RouterView />
   </AppLayout>
+  <RouterView v-else />
 </template>
 
 <script setup>
 import { RouterView } from 'vue-router'
+import { useRoute } from 'vue-router'
 import AppLayout from './components/layout/AppLayout.vue'
+
+const route = useRoute()
 </script>
 
 <style>

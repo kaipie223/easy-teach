@@ -1,6 +1,7 @@
 """向量化器 — 将文本块写入 ChromaDB（中文优化）"""
 
 import os
+from pathlib import Path
 import chromadb
 from chromadb.utils import embedding_functions
 
@@ -13,8 +14,9 @@ def build_index(chunks: list[dict], persist_dir: str,
     """
     将切分后的文本块向量化并写入 ChromaDB。
     """
-    os.makedirs(persist_dir, exist_ok=True)
-    client = chromadb.PersistentClient(path=persist_dir)
+    persist_path = Path(persist_dir).expanduser().resolve()
+    os.makedirs(str(persist_path), exist_ok=True)
+    client = chromadb.PersistentClient(path=str(persist_path))
 
     ef = embedding_functions.SentenceTransformerEmbeddingFunction(
         model_name=EMBEDDING_MODEL,

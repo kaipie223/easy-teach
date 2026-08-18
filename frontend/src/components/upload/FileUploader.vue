@@ -102,6 +102,7 @@
 
 <script setup>
 import { ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { UploadFilled, Document } from '@element-plus/icons-vue'
 import { uploadFile } from '@/api'
 
@@ -119,6 +120,7 @@ defineProps({
 })
 
 const emit = defineEmits(['uploaded'])
+const route = useRoute()
 
 const acceptedFormats = Object.keys(ACCEPTED).join(',')
 const formatLabels = Object.values(ACCEPTED).join('、')
@@ -148,6 +150,12 @@ async function handleFileSelect(e) {
 
 // 上传文件
 async function startUpload(file, retryIdx = -1) {
+  const sessionId = route.params.sessionId || route.query.sessionId
+  if (!sessionId) {
+    ElMessage.warning('请先进入一个教学会话后上传资料')
+    return
+  }
+
   // 格式校验
   if (!(file.type in ACCEPTED)) {
     ElMessage.warning(`不支持 ${file.name} 的格式，请上传 ${formatLabels}`)
@@ -170,7 +178,7 @@ async function startUpload(file, retryIdx = -1) {
   const idx = files.value.indexOf(fileEntry)
 
   try {
-    const res = await uploadFile(file, refDescription.value, {
+    const res = await uploadFile(file, sessionId, refDescription.value, {
       onUploadProgress: (e) => {
         if (e.total) {
           files.value[idx].progress = Math.round((e.loaded / e.total) * 100)

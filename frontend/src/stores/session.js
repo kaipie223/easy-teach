@@ -1,10 +1,17 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import api from '@/api'
+import api, {
+  confirmBrief as confirmBriefRequest,
+  createSession as createSessionRequest,
+  fetchBrief as fetchBriefRequest,
+  updateBrief as updateBriefRequest,
+} from '@/api'
 
 export const useSessionStore = defineStore('session', () => {
   // ── 状态 ──────────────────────────────────────
   const sessionId = ref(null)
+  const projectId = ref(null)
+  const brief = ref(null)
   const messages = ref([])
   const isLoading = ref(false)
   const error = ref(null)
@@ -58,16 +65,18 @@ export const useSessionStore = defineStore('session', () => {
   // ── 会话操作 ──────────────────────────────────
 
   /** 创建新会话 */
-  async function createSession(courseName) {
+  async function createSession(courseName, projectId = null) {
     isLoading.value = true
     error.value = null
     try {
-      const res = await api.post('/sessions', { course_name: courseName })
+      const res = await createSessionRequest(courseName, projectId)
       sessionId.value = res.data.session_id
+      projectId.value = res.data.project_id || projectId
+      brief.value = null
       clearMessages()
       return res.data
     } catch (err) {
-      error.value = err.response?.data?.detail || err.message
+      error.value = err.response?.data?.error?.message || err.message
       throw err
     } finally {
       isLoading.value = false
@@ -81,19 +90,59 @@ export const useSessionStore = defineStore('session', () => {
     try {
       const res = await api.get(`/sessions/${id}`)
       sessionId.value = id
-      messages.value = res.data.messages || []
+      projectId.value = res.data.project_id || null
+      messages.value = (res.data.messages || []).map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.created_at,
+        type: ['question', 'confirm'].includes(message.msg_type) ? message.msg_type : undefined,
+        data: message.event_data || undefined,
+      }))
       return res.data
     } catch (err) {
-      error.value = err.response?.data?.detail || err.message
+      error.value = err.response?.data?.error?.message || err.message
       throw err
     } finally {
       isLoading.value = false
     }
   }
 
+  async function fetchBrief(id = projectId.value) {
+    if (!id) {
+      brief.value = null
+      return null
+    }
+    try {
+      const res = await fetchBriefRequest(id)
+      brief.value = res.data
+      return res.data
+    } catch (err) {
+      if (err.response?.status === 404) {
+        brief.value = null
+        return null
+      }
+      throw err
+    }
+  }
+
+  async function updateBrief(changes, id = projectId.value) {
+    const res = await updateBriefRequest(id, changes)
+    brief.value = res.data
+    return res.data
+  }
+
+  async function confirmBrief(id = projectId.value) {
+    const res = await confirmBriefRequest(id, brief.value?.version || null)
+    brief.value = res.data
+    return res.data
+  }
+
   /** 重置会话状态 */
   function resetSession() {
     sessionId.value = null
+    projectId.value = null
+    brief.value = null
     messages.value = []
     isLoading.value = false
     error.value = null
@@ -111,6 +160,8 @@ export const useSessionStore = defineStore('session', () => {
   return {
     // 状态
     sessionId,
+    projectId,
+    brief,
     messages,
     isLoading,
     error,
@@ -126,6 +177,9 @@ export const useSessionStore = defineStore('session', () => {
     clearMessages,
     createSession,
     fetchSession,
+    fetchBrief,
+    updateBrief,
+    confirmBrief,
     resetSession,
     setSSEClient,
   }

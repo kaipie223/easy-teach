@@ -1,11 +1,8 @@
 """验证 ChromaDB + 中文 embedding 检索精度"""
-import os
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+from backend.config import settings
 from ai.rag.retriever import RAGRetriever
 
-PERSIST_DIR = os.path.join(os.path.dirname(__file__), "..", "chroma_data")
+PERSIST_DIR = settings.chroma_persist_dir
 
 retriever = RAGRetriever(PERSIST_DIR)
 

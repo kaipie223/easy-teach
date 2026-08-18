@@ -1,4 +1,4 @@
-from db.database import Base
+from backend.db.database import Base
 from .session import gen_id
 from sqlalchemy import Column, String, Integer, DateTime, JSON
 from datetime import datetime, timezone
@@ -10,6 +10,8 @@ class Task(Base):
     __tablename__ = "tasks"
 
     task_id = Column(String, primary_key=True, default=lambda: gen_id("task"))
+    user_id = Column(String, nullable=True, index=True)
+    project_id = Column(String, nullable=True, index=True)
     session_id = Column(String, nullable=False)
     status = Column(String, default="pending")        # pending / processing / completed / failed
     progress = Column(Integer, default=0)             # 0-100

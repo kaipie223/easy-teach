@@ -1,4 +1,4 @@
-from db.database import Base
+from backend.db.database import Base
 from .session import gen_id
 from sqlalchemy import Column, String, Float, DateTime
 from datetime import datetime, timezone
@@ -10,6 +10,8 @@ class FileRecord(Base):
     __tablename__ = "files"
 
     file_id = Column(String, primary_key=True, default=lambda: gen_id("f"))
+    user_id = Column(String, nullable=True, index=True)
+    project_id = Column(String, nullable=True, index=True)
     session_id = Column(String, nullable=False)
     original_name = Column(String, nullable=False)
     file_type = Column(String, nullable=False)        # pdf / word / ppt / image / video

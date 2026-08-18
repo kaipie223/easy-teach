@@ -70,12 +70,14 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { EditPen, Reading, ChatDotRound, ArrowRight } from '@element-plus/icons-vue'
 import { useSessionStore } from '@/stores/session'
+import { createProject, fetchProject } from '@/api'
 
 const router = useRouter()
+const route = useRoute()
 const sessionStore = useSessionStore()
 
 const courseName = ref('')
@@ -83,6 +85,7 @@ const loading = ref(false)
 const errorMsg = ref('')
 
 const recentSessions = ref([]) // TODO: 从 localStorage 或后端获取
+const selectedProjectId = ref(typeof route.query.projectId === 'string' ? route.query.projectId : '')
 
 async function handleCreate() {
   const name = courseName.value.trim()
@@ -92,12 +95,17 @@ async function handleCreate() {
   errorMsg.value = ''
 
   try {
-    const res = await sessionStore.createSession(name)
+    let projectId = selectedProjectId.value
+    if (!projectId) {
+      const project = await createProject({ title: name, scenario: '' })
+      projectId = project.data.project_id
+    }
+    const res = await sessionStore.createSession(name, projectId)
     // 保存到本地最近列表
     saveRecentSession({ id: res.session_id, name, created_at: new Date().toISOString() })
     router.push(`/chat/${res.session_id}`)
   } catch (err) {
-    errorMsg.value = err.response?.data?.detail || err.message || '创建会话失败，请重试'
+    errorMsg.value = err.response?.data?.error?.message || err.message || '创建会话失败，请重试'
   } finally {
     loading.value = false
   }
@@ -126,6 +134,16 @@ function formatDate(ts) {
 }
 
 loadRecentSessions()
+
+onMounted(async () => {
+  if (!selectedProjectId.value) return
+  try {
+    const res = await fetchProject(selectedProjectId.value)
+    courseName.value = res.data.title
+  } catch {
+    selectedProjectId.value = ''
+  }
+})
 </script>
 
 <style scoped>

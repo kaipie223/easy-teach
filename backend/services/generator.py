@@ -2,8 +2,7 @@
 
 import logging
 
-from config import settings
-from schemas import GenerationInstruction
+from backend.config import settings
 
 logger = logging.getLogger(__name__)
 

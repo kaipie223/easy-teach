@@ -18,8 +18,8 @@
         <el-avatar :size="32">
           <el-icon><UserFilled /></el-icon>
         </el-avatar>
-        <span>张老师</span>
-        <el-icon class="arrow"><ArrowDown /></el-icon>
+        <span>{{ auth.displayName }}</span>
+        <el-button class="logout-button" text @click="logout">退出</el-button>
       </div>
     </div>
   </header>
@@ -28,10 +28,19 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { ArrowDown, Bell, CircleCheck, House, UserFilled } from '@element-plus/icons-vue'
+import { Bell, CircleCheck, House, UserFilled } from '@element-plus/icons-vue'
+import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const router = useRouter()
+const auth = useAuthStore()
 const currentTitle = computed(() => route.meta.title || '工作台')
+
+function logout() {
+  auth.logout()
+  router.replace({ name: 'login' })
+}
 </script>
 
 <style scoped>
@@ -112,6 +121,11 @@ const currentTitle = computed(() => route.meta.title || '工作台')
 .arrow {
   color: #6b7280;
   font-size: 14px;
+}
+
+.logout-button {
+  color: #64748b;
+  padding: 0 4px;
 }
 
 @media (max-width: 720px) {

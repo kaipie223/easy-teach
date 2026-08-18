@@ -19,11 +19,15 @@ class ApiError(Exception):
         code: str = "bad_request",
         status_code: int = 400,
         details: Any | None = None,
+        recoverable: bool = True,
+        suggested_action: str | None = None,
     ):
         self.message = message
         self.code = code
         self.status_code = status_code
         self.details = details
+        self.recoverable = recoverable
+        self.suggested_action = suggested_action
 
 
 def get_request_id(request: Request) -> str:
@@ -41,6 +45,8 @@ def build_error_response(
     code: str,
     message: str,
     details: Any | None = None,
+    recoverable: bool = True,
+    suggested_action: str | None = None,
 ) -> dict[str, Any]:
     return {
         "error": {
@@ -48,6 +54,8 @@ def build_error_response(
             "message": message,
             "details": details,
             "request_id": get_request_id(request),
+            "recoverable": recoverable,
+            "suggested_action": suggested_action,
         }
     }
 
@@ -62,6 +70,8 @@ def register_exception_handlers(app: FastAPI) -> None:
                 code=exc.code,
                 message=exc.message,
                 details=exc.details,
+                recoverable=exc.recoverable,
+                suggested_action=exc.suggested_action,
             ),
         )
 
@@ -73,6 +83,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 request,
                 code="http_error",
                 message=str(exc.detail),
+                recoverable=exc.status_code < 500,
             ),
             headers=exc.headers,
         )
@@ -86,6 +97,8 @@ def register_exception_handlers(app: FastAPI) -> None:
                 code="validation_error",
                 message="Request validation failed.",
                 details=exc.errors(),
+                recoverable=True,
+                suggested_action="请修正请求字段后重试",
             ),
         )
 
@@ -98,5 +111,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 request,
                 code="internal_error",
                 message="Internal server error.",
+                recoverable=True,
+                suggested_action="请稍后重试；如果问题持续，请联系管理员",
             ),
         )

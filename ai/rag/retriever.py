@@ -1,14 +1,10 @@
 """RAGRetriever - hybrid search: vector (0.7) + keyword (0.3)"""
 
-import os
-import sys
-_p = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, _p)
-sys.path.insert(0, os.path.join(_p, 'backend'))
+from pathlib import Path
 
 import chromadb
 from chromadb.utils import embedding_functions
-from schemas import RAGDocument
+from backend.schemas import RAGDocument
 
 EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 
@@ -47,11 +43,19 @@ def _keyword_score(query, content):
 class RAGRetriever:
 
     def __init__(self, chroma_persist_dir, collection_name="knowledge_base", vector_weight=0.7):
-        if not os.path.isdir(chroma_persist_dir):
-            raise FileNotFoundError("ChromaDB dir not found: " + chroma_persist_dir)
+        persist_path = Path(chroma_persist_dir).expanduser().resolve()
+        if not persist_path.is_dir():
+            raise FileNotFoundError(f"ChromaDB dir not found: {persist_path}")
+        self.persist_path = persist_path
         self.vector_weight = vector_weight
         self.kw_weight = 1.0 - vector_weight
-        self.client = chromadb.PersistentClient(path=chroma_persist_dir)
+        self.client = chromadb.PersistentClient(path=str(persist_path))
+        collection_names = self.client.list_collections()
+        names = [item.name if hasattr(item, "name") else str(item) for item in collection_names]
+        if collection_name not in names:
+            raise FileNotFoundError(
+                f"Chroma collection not found: {collection_name}; run `uv run python -m ai.build_kb`"
+            )
         self.ef = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=EMBEDDING_MODEL,
         )
@@ -64,17 +68,20 @@ class RAGRetriever:
         results = self.collection.get()
         if not results.get('ids'):
             return []
+        documents = results.get('documents') or []
         out = []
         for i in range(len(results['ids'])):
             meta = results['metadatas'][i] if results.get('metadatas') else {}
             out.append({
                 'id': results['ids'][i],
-                'content': results['documents'][i] or '',
+                'content': documents[i] if i < len(documents) else '',
                 'source': meta.get('source', 'unknown')
             })
         return out
 
     def search(self, query, top_k=5):
+        if not query or top_k <= 0 or not self._all_docs:
+            return []
         candidates = {}
         n_fetch = min(top_k * 5, len(self._all_docs))
         vec_raw = self.collection.query(query_texts=[query], n_results=n_fetch)
