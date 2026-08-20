@@ -35,6 +35,7 @@ backend/generated/
 .run-logs/
 playwright-report/
 test-results/
+.qa-m6/
 
 # ChromaDB
 chroma_data/

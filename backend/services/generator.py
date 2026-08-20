@@ -65,17 +65,36 @@ def _source_line(refs: list[dict]) -> str:
     return "来源：" + "；".join(labels) if labels else "来源：暂无可用证据"
 
 
-def _add_textbox(slide, left, top, width, height, text, *, font_size=22, bold=False):
+def _add_textbox(
+    slide,
+    left,
+    top,
+    width,
+    height,
+    text,
+    *,
+    font_size=22,
+    bold=False,
+    font_name="Microsoft YaHei",
+    align=None,
+):
     from pptx.util import Pt
 
     box = slide.shapes.add_textbox(left, top, width, height)
     frame = box.text_frame
     frame.word_wrap = True
+    frame.margin_left = 0
+    frame.margin_right = 0
+    frame.margin_top = 0
+    frame.margin_bottom = 0
     frame.clear()
     paragraph = frame.paragraphs[0]
     paragraph.text = str(text)
     paragraph.font.size = Pt(font_size)
     paragraph.font.bold = bold
+    paragraph.font.name = font_name
+    if align is not None:
+        paragraph.alignment = align
     return box
 
 
@@ -88,6 +107,7 @@ async def generate_pptx(
 ) -> str:
     """Render all SlideSpec entries from a CoursewarePlan into a PPTX."""
     from pptx import Presentation
+    from pptx.enum.text import PP_ALIGN
     from pptx.util import Inches, Pt
 
     prs = Presentation()
@@ -97,34 +117,41 @@ async def generate_pptx(
 
     for index, spec in enumerate(slides):
         slide = prs.slides.add_slide(prs.slide_layouts[6])
-        title_size = 36 if index == 0 else 28
+        layout = str(spec.get("layout") or "title_and_bullets")
+        title_size = 50 if index == 0 or layout == "cover" else 35
         _add_textbox(
             slide,
             Inches(0.65),
             Inches(0.55),
             Inches(12.0),
-            Inches(0.8),
+            Inches(0.9),
             spec.get("title", "教学内容"),
             font_size=title_size,
             bold=True,
         )
         bullets = spec.get("bullets") or []
-        body = slide.shapes.add_textbox(Inches(0.9), Inches(1.7), Inches(11.6), Inches(4.7))
+        body = slide.shapes.add_textbox(Inches(0.9), Inches(1.75), Inches(11.6), Inches(4.15))
         frame = body.text_frame
         frame.word_wrap = True
+        frame.margin_left = 0
+        frame.margin_right = 0
+        frame.margin_top = 0
+        frame.margin_bottom = 0
         frame.clear()
         for bullet_index, bullet in enumerate(bullets):
             paragraph = frame.paragraphs[0] if bullet_index == 0 else frame.add_paragraph()
-            paragraph.text = str(bullet)
+            prefix = "" if layout in {"cover", "agenda"} else "• "
+            paragraph.text = prefix + str(bullet)
             paragraph.level = 0
-            paragraph.font.size = Pt(22 if index == 0 else 20)
+            paragraph.font.size = Pt(24 if index == 0 else 22)
+            paragraph.font.name = "Microsoft YaHei"
             paragraph.space_after = Pt(12)
 
         _add_textbox(
             slide,
             Inches(0.65),
             Inches(6.75),
-            Inches(12.0),
+            Inches(10.2),
             Inches(0.35),
             _source_line(spec.get("evidence_refs") or []),
             font_size=9,
@@ -140,6 +167,16 @@ async def generate_pptx(
                 f"讲稿：{notes}",
                 font_size=10,
             )
+        _add_textbox(
+            slide,
+            Inches(11.45),
+            Inches(6.75),
+            Inches(1.2),
+            Inches(0.35),
+            f"{index + 1} / {len(slides)}",
+            font_size=9,
+            align=PP_ALIGN.RIGHT,
+        )
 
     output_path = settings.output_dir / (output_name or f"ppt_{uuid.uuid4().hex[:8]}.pptx")
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,12 +194,42 @@ async def generate_docx(
 ) -> str:
     """Render LessonPlanSectionSpec entries from a CoursewarePlan into DOCX."""
     from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Inches, Pt
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    def set_style_font(style, name: str, size: int, *, bold: bool = False) -> None:
+        style.font.name = name
+        style.font.size = Pt(size)
+        style.font.bold = bold
+        rpr = style._element.get_or_add_rPr()
+        rfonts = rpr.rFonts
+        if rfonts is None:
+            rfonts = OxmlElement("w:rFonts")
+            rpr.append(rfonts)
+        rfonts.set(qn("w:eastAsia"), name)
 
     doc = Document()
-    doc.add_heading(_plan_title(plan), level=0)
+    section = doc.sections[0]
+    section.top_margin = Inches(0.8)
+    section.bottom_margin = Inches(0.8)
+    section.left_margin = Inches(0.9)
+    section.right_margin = Inches(0.9)
+    set_style_font(doc.styles["Normal"], "Microsoft YaHei", 10)
+    doc.styles["Normal"].paragraph_format.space_after = Pt(6)
+    doc.styles["Normal"].paragraph_format.line_spacing = 1.15
+    set_style_font(doc.styles["Title"], "Microsoft YaHei", 22, bold=True)
+    set_style_font(doc.styles["Heading 1"], "Microsoft YaHei", 15, bold=True)
+    set_style_font(doc.styles["Heading 2"], "Microsoft YaHei", 12, bold=True)
+
+    title = doc.add_heading(_plan_title(plan), level=0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title.paragraph_format.space_after = Pt(10)
     doc.add_paragraph(
         f"授课对象：{plan.get('target_audience', '')}  |  "
-        f"课时：{plan.get('duration_minutes', 45)} 分钟"
+        f"课时：{plan.get('duration_minutes', 45)} 分钟  |  "
+        f"配套课件：{len(_slides(plan))} 页"
     )
     doc.add_heading("一、教学目标", level=1)
     doc.add_paragraph(str(plan.get("teaching_goal") or _plan_title(plan)))
@@ -179,14 +246,18 @@ async def generate_docx(
             level=2,
         )
         doc.add_paragraph(f"目标：{section.get('objective', '')}")
-        doc.add_paragraph("教师活动：" + "；".join(section.get("teacher_actions") or []))
-        doc.add_paragraph("学生活动：" + "；".join(section.get("student_actions") or []))
+        teacher = doc.add_paragraph()
+        teacher.add_run("教师活动：").bold = True
+        teacher.add_run("；".join(section.get("teacher_actions") or []))
+        student = doc.add_paragraph()
+        student.add_run("学生活动：").bold = True
+        student.add_run("；".join(section.get("student_actions") or []))
         doc.add_paragraph(f"评价：{section.get('assessment', '')}")
         doc.add_paragraph(_source_line(section.get("evidence_refs") or []))
 
     doc.add_heading("四、互动练习", level=1)
     for interaction in plan.get("interactions") or []:
-        doc.add_paragraph(str(interaction.get("title", "互动练习")))
+        doc.add_heading(str(interaction.get("title", "互动练习")), level=2)
         doc.add_paragraph(str(interaction.get("prompt", "")))
         for item in interaction.get("items") or []:
             doc.add_paragraph(str(item), style="List Bullet")
@@ -218,8 +289,15 @@ async def generate_html(
     interaction = (plan.get("interactions") or [{}])[0]
     interaction_title = html_lib.escape(str(interaction.get("title") or "互动练习"))
     prompt = html_lib.escape(str(interaction.get("prompt") or "请完成本课互动练习"))
+    interaction_type = str(interaction.get("interaction_type") or "classification")
+    interaction_type_label = {
+        "matching": "配对",
+        "ordering": "排序",
+        "classification": "分类",
+    }.get(interaction_type, "互动")
     items = [str(item) for item in interaction.get("items") or []]
     item_json = json.dumps(items, ensure_ascii=False)
+    interaction_type_json = json.dumps(interaction_type, ensure_ascii=False)
     source_text = html_lib.escape(_source_line(interaction.get("evidence_refs") or []))
     item_markup = "".join(
         f'<button class="item" data-index="{index}">{html_lib.escape(item)}</button>'
@@ -246,20 +324,29 @@ async def generate_html(
   <h1>{title}</h1>
   <h2>{interaction_title}</h2>
   <p>{prompt}</p>
+  <p class="mode">互动方式：{html_lib.escape(interaction_type_label)}</p>
   <section id="items">{item_markup}</section>
   <p id="result" aria-live="polite"></p>
   <p class="source">{source_text}</p>
 </main>
 <script>
 const items = {item_json};
+const interactionType = {interaction_type_json};
 const selected = [];
 document.querySelectorAll('.item').forEach((button) => {{
   button.addEventListener('click', () => {{
     const index = Number(button.dataset.index);
+    if (interactionType === 'ordering') {{
+      if (selected.includes(index)) selected.splice(selected.indexOf(index), 1);
+      else selected.push(index);
+      button.classList.toggle('selected', selected.includes(index));
+      document.querySelector('#result').textContent = `当前顺序：${{selected.map((item) => item + 1).join('、')}} / ${{items.length}}`;
+      return;
+    }}
     button.classList.toggle('selected');
     if (selected.includes(index)) selected.splice(selected.indexOf(index), 1);
     else selected.push(index);
-    document.querySelector('#result').textContent = `已选择 ${{selected.length}} / ${{items.length}} 项`;
+    document.querySelector('#result').textContent = `已选择 ${{selected.length}} / ${{items.length}} 组`;
   }});
 }});
 </script>

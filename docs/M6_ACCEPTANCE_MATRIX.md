@@ -13,7 +13,7 @@
 | PDF/DOCX/PPTX/图片/视频资料解析 | 部分覆盖 | `tests/test_m3_materials.py`、本地解析器 | 视频真实关键帧/时间戳案例尚未纳入固定烟测 |
 | 本地知识库、向量检索、来源定位 | 部分覆盖 | TCP 真实本地索引命中教材页码；`tests/test_m6_fixed_cases.py` 离线固定 RAG | 红黄蓝案例目前使用离线固定证据，未进入共享知识库 |
 | TeachingBrief + Evidence -> CoursewarePlan | 通过 | `tests/test_m4_courseware.py`、固定 TCP/红黄蓝蓝图回归 | 仍是确定性编译路径，未验证外部模型响应 |
-| PPTX、DOCX、HTML 三种成果生成 | 部分覆盖 | 固定案例结构回归；PPTX 已渲染并通过溢出检查 | DOCX 当前环境缺少 LibreOffice，无法完成 PNG 视觉验收；固定案例页数尚未达到 PRD 约定的 TCP 10 页/红黄蓝 8 页 |
+| PPTX、DOCX、HTML 三种成果生成 | 通过 | `tests/test_m6_fixed_cases.py`；TCP 10 页、红黄蓝 8 页固定蓝图回归；两套 PPTX 已逐页渲染并通过溢出检查；两套 DOCX 已用本机 Word 导出 PDF 并逐页检查 PNG | 仍需在 Office 与 WPS 各人工打开一次；当前固定案例未覆盖真实图片/视频素材排版 |
 | 成果预览与下载 | 通过 | Playwright 主流程、真实 HTTP 生成/下载烟测 | 尚未在 Office 与 WPS 各人工打开一次 |
 | 指定页/章节局部修改、版本不可变、回滚 | 通过 | `tests/test_m5_versioning.py` | 暂无多人并发修改压力测试 |
 | 任务队列、幂等、进度、重试、过期恢复 | 通过 | `tests/test_m6_queue.py`、Celery/Redis HTTP 烟测 | 未做 worker 进程崩溃和真实超时演练 |
@@ -41,4 +41,4 @@ cd frontend; npm run build; npm run test:e2e
 
 ## 当前结论
 
-队列、版本、蓝图和三种产物的应用链路已具备继续演示的基础，M6 仍不能标记为“所有 P0 关闭”：DOCX 视觉渲染、视频真实固定案例、语音真实回归、红黄蓝共享知识库数据和 Office/WPS 人工打开仍是发布前门槛。
+队列、版本、蓝图和三种产物的应用链路已具备继续演示的基础，M6 仍不能标记为“所有 P0 关闭”：视频真实固定案例、语音真实回归、红黄蓝共享知识库数据和 Office/WPS 人工打开仍是发布前门槛。

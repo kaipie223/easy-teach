@@ -220,7 +220,9 @@ def _regenerate(item: dict[str, Any], instruction: str) -> None:
     lower = instruction.lower()
     if any(word in instruction for word in ("简化", "精简", "缩短")):
         if "bullets" in item:
-            item["bullets"] = [str(value)[:80] for value in (item.get("bullets") or [])[:3]]
+            bullets = [str(value)[:80] for value in (item.get("bullets") or [])]
+            keep_count = max(1, len(bullets) // 2)
+            item["bullets"] = bullets[:keep_count]
         if item.get("speaker_notes"):
             item["speaker_notes"] = str(item["speaker_notes"]).split("。", 1)[0].strip("。")
         return

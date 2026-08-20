@@ -23,6 +23,8 @@ FIXED_CASES = [
         "query": "TCP 三次握手 SYN ACK",
         "source": "tcp-case.pdf",
         "title": "理解 TCP 三次握手",
+        "slide_count": 10,
+        "interaction_type": "ordering",
         "knowledge_titles": ["连接建立过程", "报文确认机制"],
         "brief": {
             "teaching_goal": "理解 TCP 三次握手",
@@ -58,6 +60,8 @@ FIXED_CASES = [
         "query": "认识红黄蓝 颜色认知",
         "source": "colors-case.pdf",
         "title": "认识红、黄、蓝",
+        "slide_count": 8,
+        "interaction_type": "matching",
         "knowledge_titles": ["认识红色", "认识黄色", "认识蓝色"],
         "brief": {
             "teaching_goal": "认识红、黄、蓝",
@@ -186,7 +190,9 @@ def test_fixed_case_local_rag_and_blueprint(case, monkeypatch):
     plan, documents = build_case_plan(case, monkeypatch)
 
     assert plan.title == case["title"]
+    assert len(plan.slides) == case["slide_count"]
     assert [item.title for item in plan.knowledge_points] == case["knowledge_titles"]
+    assert plan.interactions[0].interaction_type == case["interaction_type"]
     assert plan.slides[0].evidence_refs
     assert all(slide.evidence_refs for slide in plan.slides)
     assert any(document.source == case["source"] for document in documents)
@@ -221,3 +227,4 @@ def test_fixed_case_exports_contain_visible_content(tmp_path, monkeypatch, case)
     html_text = html_path.read_text(encoding="utf-8")
     assert case["title"] in html_text
     assert "互动练习" in html_text
+    assert "互动方式：" in html_text
