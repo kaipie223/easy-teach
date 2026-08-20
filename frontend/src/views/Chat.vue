@@ -239,7 +239,8 @@ function handleModify() {
 
 function handleGenerate() {
   if (!canGenerate.value) return
-  router.push(`/blueprint`)
+  const query = projectId.value ? `?projectId=${encodeURIComponent(projectId.value)}` : ''
+  router.push(`/blueprint${query}`)
 }
 
 // ── 语音 ──────────────────────────────────────

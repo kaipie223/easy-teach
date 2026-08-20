@@ -166,3 +166,146 @@ export function confirmBrief(projectId, expectedVersion = null) {
   const body = expectedVersion ? { expected_version: expectedVersion } : undefined
   return api.post(`/projects/${projectId}/brief/confirm`, body)
 }
+
+// ── 教学蓝图与成果生成 ─────────────────────────────
+
+export function fetchCoursewarePlan(projectId) {
+  return api.get(`/projects/${projectId}/plan`)
+}
+
+export function buildCoursewarePlan(projectId, forceRebuild = false) {
+  return api.post(`/projects/${projectId}/plan`, { force_rebuild: forceRebuild }, {
+    timeout: 10 * 60 * 1000,
+  })
+}
+
+export function startProjectGeneration(projectId, planId = null) {
+  return api.post(`/projects/${projectId}/generate`, planId ? { plan_id: planId } : undefined)
+}
+
+// ── 版本与局部修改 ──────────────────────────────────
+
+export function fetchArtifactVersions(projectId) {
+  return api.get(`/projects/${projectId}/versions`)
+}
+
+export function fetchArtifactVersion(projectId, versionId) {
+  return api.get(`/projects/${projectId}/versions/${versionId}`)
+}
+
+export function interpretRevision(projectId, instruction, baseVersionId = null) {
+  return api.post(`/projects/${projectId}/revisions/interpret`, {
+    instruction,
+    ...(baseVersionId ? { base_version_id: baseVersionId } : {}),
+  })
+}
+
+export function applyRevision(projectId, patchId, confirmed = false) {
+  return api.post(`/projects/${projectId}/revisions/apply`, {
+    patch_id: patchId,
+    confirmed,
+  })
+}
+
+export function restoreArtifactVersion(projectId, versionId, summary = '') {
+  return api.post(`/projects/${projectId}/versions/${versionId}/restore`, summary ? { summary } : undefined)
+}
+
+export function createVersionExports(projectId, artifactVersionId, formats = ['pptx', 'docx', 'html'], force = false) {
+  return api.post(`/projects/${projectId}/exports`, {
+    artifact_version_id: artifactVersionId,
+    formats,
+    force,
+  }, { timeout: 30000 })
+}
+
+export function fetchProjectExports(projectId, artifactVersionId = null) {
+  return api.get(`/projects/${projectId}/exports`, {
+    params: artifactVersionId ? { artifact_version_id: artifactVersionId } : {},
+  })
+}
+
+export function fetchExport(exportId) {
+  return api.get(`/exports/${exportId}`)
+}
+
+export function downloadExport(exportId) {
+  return api.get(`/exports/${exportId}/download`, { responseType: 'blob' })
+}
+
+// ── 项目资料 ──────────────────────────────────────
+
+export function fetchProjectMaterials(projectId) {
+  return api.get(`/projects/${projectId}/materials`)
+}
+
+export function uploadProjectMaterial(projectId, file, sessionId = null, refDescription = '', options = {}) {
+  const form = new FormData()
+  form.append('file', file)
+  if (sessionId) form.append('session_id', sessionId)
+  if (refDescription) form.append('ref_description', refDescription)
+  return api.post(`/projects/${projectId}/materials`, form, options)
+}
+
+export function fetchMaterial(materialId) {
+  return api.get(`/materials/${materialId}`)
+}
+
+export function fetchMaterialAnalysis(materialId) {
+  return api.get(`/materials/${materialId}/analysis`)
+}
+
+export function fetchMaterialEvidence(materialId) {
+  return api.get(`/materials/${materialId}/evidence`)
+}
+
+export function fetchMaterialBindings(materialId) {
+  return api.get(`/materials/${materialId}/bindings`)
+}
+
+export function replaceMaterialBindings(materialId, bindings) {
+  return api.put(`/materials/${materialId}/bindings`, { bindings })
+}
+
+export function downloadMaterial(materialId) {
+  return api.get(`/materials/${materialId}/download`, { responseType: 'blob' })
+}
+
+export function deleteMaterial(materialId) {
+  return api.delete(`/materials/${materialId}`)
+}
+
+// ── 知识库 ────────────────────────────────────────
+
+export function fetchKnowledgeDocuments(params = {}) {
+  return api.get('/knowledge/documents', { params })
+}
+
+export function uploadKnowledgeDocument(file, payload = {}, options = {}) {
+  const form = new FormData()
+  form.append('file', file)
+  if (payload.collectionId) form.append('collection_id', payload.collectionId)
+  if (payload.title) form.append('title', payload.title)
+  form.append('enabled', String(Boolean(payload.enabled)))
+  return api.post('/knowledge/documents', form, options)
+}
+
+export function updateKnowledgeDocument(documentId, payload) {
+  return api.patch(`/knowledge/documents/${documentId}`, payload)
+}
+
+export function deleteKnowledgeDocument(documentId) {
+  return api.delete(`/knowledge/documents/${documentId}`)
+}
+
+export function rebuildKnowledgeIndex() {
+  return api.post('/knowledge/index', undefined, { timeout: 10 * 60 * 1000 })
+}
+
+export function indexKnowledgeDocument(documentId) {
+  return api.post(`/knowledge/documents/${documentId}/index`, undefined, { timeout: 10 * 60 * 1000 })
+}
+
+export function searchKnowledge(query, topK = 5) {
+  return api.post('/knowledge/search', { query, top_k: topK })
+}

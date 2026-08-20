@@ -1,4 +1,5 @@
 import pytest
+import os
 
 from ai.rag.retriever import RAGRetriever
 from backend.config import settings
@@ -40,6 +41,8 @@ def test_runtime_paths_are_absolute():
     assert settings.upload_dir.is_absolute()
     assert settings.output_dir.is_absolute()
     assert settings.chroma_persist_dir.is_absolute()
+    if os.name == "nt":
+        assert str(settings.chroma_persist_dir).isascii()
 
 
 def test_empty_chroma_collection_is_reported_without_embedding_download(tmp_path):

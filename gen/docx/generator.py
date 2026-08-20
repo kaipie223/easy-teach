@@ -4,7 +4,7 @@ M5 - Word 教案生成器 (Owner: 赵钰洁)
 """
 import os
 from docx import Document
-from docx.shared import Pt, RGBColor
+from docx.shared import Pt
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 

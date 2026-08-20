@@ -4,6 +4,7 @@ from .generate import router as generate_router
 from .session import router as session_router
 from .speech import router as speech_router
 from .upload import router as upload_router
+from .courseware import router as courseware_router
 
 __all__ = [
     "chat_router",
@@ -12,4 +13,5 @@ __all__ = [
     "session_router",
     "speech_router",
     "upload_router",
+    "courseware_router",
 ]

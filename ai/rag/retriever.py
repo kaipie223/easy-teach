@@ -1,9 +1,8 @@
 """RAGRetriever - hybrid search: vector (0.7) + keyword (0.3)"""
 
-from pathlib import Path
-
 import chromadb
 from chromadb.utils import embedding_functions
+from backend.config import normalize_chroma_path
 from backend.schemas import RAGDocument
 
 EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
@@ -43,7 +42,7 @@ def _keyword_score(query, content):
 class RAGRetriever:
 
     def __init__(self, chroma_persist_dir, collection_name="knowledge_base", vector_weight=0.7):
-        persist_path = Path(chroma_persist_dir).expanduser().resolve()
+        persist_path = normalize_chroma_path(chroma_persist_dir)
         if not persist_path.is_dir():
             raise FileNotFoundError(f"ChromaDB dir not found: {persist_path}")
         self.persist_path = persist_path
@@ -75,7 +74,8 @@ class RAGRetriever:
             out.append({
                 'id': results['ids'][i],
                 'content': documents[i] if i < len(documents) else '',
-                'source': meta.get('source', 'unknown')
+                'source': meta.get('source', 'unknown'),
+                'metadata': meta,
             })
         return out
 
@@ -93,6 +93,7 @@ class RAGRetriever:
                 candidates[did] = {
                     'content': vec_raw['documents'][0][i],
                     'source': (vec_raw['metadatas'][0][i] or {}).get('source', 'unknown'),
+                    'metadata': vec_raw['metadatas'][0][i] or {},
                     'vec_score': vs,
                     'kw_score': 0.0,
                 }
@@ -115,6 +116,7 @@ class RAGRetriever:
             candidates[doc['id']] = {
                 'content': doc['content'],
                 'source': doc['source'],
+                'metadata': doc.get('metadata', {}),
                 'vec_score': 0.0,
                 'kw_score': ks,
                 'combined': ks * kw,
@@ -123,10 +125,20 @@ class RAGRetriever:
         ranked = sorted(candidates.values(), key=lambda x: x['combined'], reverse=True)
         docs = []
         for info in ranked[:top_k]:
+            metadata = info.get('metadata') or {}
+            locator = {
+                key.removeprefix('locator_'): value
+                for key, value in metadata.items()
+                if key.startswith('locator_')
+            }
             docs.append(RAGDocument(
                 content=info['content'],
                 source=info['source'],
                 score=round(info['combined'], 4),
+                evidence_id=metadata.get('evidence_id'),
+                document_id=metadata.get('document_id'),
+                locator=locator,
+                metadata=metadata,
             ))
         return docs
 

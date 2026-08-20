@@ -3,7 +3,6 @@ M5 - PPT 页面模板定义 (Owner: 赵钰洁)
 负责定义 4 种基础幻灯片页面的组装逻辑：封面、目录、内容、总结
 """
 from pptx import Presentation
-from pptx.util import Pt
 
 
 def create_cover_slide(prs: Presentation, title: str, subtitle: str):

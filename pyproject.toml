@@ -29,6 +29,7 @@ dependencies = [
   "sentence-transformers>=2.6.0",
   "sqlalchemy==2.0.30",
   "uvicorn[standard]==0.30.1",
+  "celery[redis]==5.4.0",
 ]
 
 [dependency-groups]

@@ -33,6 +33,11 @@ backend/generated/
 
 # Local run logs and screenshots
 .run-logs/
+playwright-report/
+test-results/
 
 # ChromaDB
 chroma_data/
+
+# Managed knowledge-base copies are runtime data, not source fixtures.
+knowledge-base/.managed/

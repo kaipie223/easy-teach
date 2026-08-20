@@ -5,6 +5,7 @@ working directory so ``uv run`` and direct module execution use the same
 runtime locations.
 """
 
+import os
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
@@ -12,6 +13,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def normalize_chroma_path(path: str | Path) -> Path:
+    """Return a Chroma path that hnswlib can persist on Windows.
+
+    The Windows build of hnswlib used by Chroma 0.5.x cannot create its
+    binary index files below a path containing non-ASCII characters. The
+    repository path may contain Chinese characters, so use an ASCII runtime
+    directory in that case while keeping configured paths unchanged elsewhere.
+    """
+    resolved = Path(path).expanduser().resolve()
+    if os.name != "nt" or str(resolved).isascii():
+        return resolved
+
+    system_drive = os.environ.get("SystemDrive", "C:")
+    return (Path(system_drive) / "easy-teach-runtime" / "chroma").resolve()
 
 
 class Settings(BaseSettings):
@@ -34,6 +51,16 @@ class Settings(BaseSettings):
     # Database
     database_url: str = "sqlite:///./data/easy_teach.db"
     redis_url: str = "redis://localhost:6379/0"
+
+    # Long-running task execution
+    task_queue_enabled: bool = True
+    task_queue_eager: bool = False
+    task_queue_name: str = "easy_teach"
+    task_max_retries: int = 2
+    task_time_limit_seconds: int = 900
+    task_soft_time_limit_seconds: int = 840
+    task_stale_after_seconds: int = 1800
+    task_retry_backoff_seconds: int = 15
 
     # Runtime storage
     data_dir: Path = PROJECT_ROOT / "data"
@@ -67,12 +94,13 @@ class Settings(BaseSettings):
             "data_dir",
             "upload_dir",
             "output_dir",
-            "chroma_persist_dir",
             "knowledge_base_dir",
         ):
             path = getattr(self, field_name)
             if not path.is_absolute():
                 setattr(self, field_name, (PROJECT_ROOT / path).resolve())
+
+        self.chroma_persist_dir = normalize_chroma_path(self.chroma_persist_dir)
 
         if self.database_url.startswith("sqlite:///"):
             raw_path = self.database_url.removeprefix("sqlite:///")

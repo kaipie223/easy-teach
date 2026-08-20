@@ -25,7 +25,7 @@ class Session(Base):
     intent_state = Column(String, nullable=True, default="init")
     intent_data = Column(JSON, nullable=True)
     current_brief_id = Column(String, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ChatMessage(Base):
@@ -41,4 +41,4 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     msg_type = Column(String, default="text")        # text / question / confirm
     event_data = Column(JSON, nullable=True)          # structured SSE payload
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

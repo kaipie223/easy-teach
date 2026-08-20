@@ -8,8 +8,8 @@
 - 当前 worktree：`D:\morii\2026暑期服务外包\easy-teach-dev`
 - 当前分支：`codex/project-implementation`
 - 远程仓库：`https://github.com/kaipie223/easy-teach.git`
-- 当前基线：`origin/main` / `a8a0afa`
-- 基线状态：worktree 创建时与 `origin/main` 完全一致，创建后仅新增本文档
+- 当前基线：`origin/main` / `ffff342`（原始 worktree 基线为 `a8a0afa`）
+- 基线状态：当前分支的提交已合并到 `origin/main`；本地保留未提交的 M0-M4 实现改动
 - 网络代理：涉及 GitHub 或模型服务网络请求时，使用本机 `7897` 端口
 
 PowerShell 示例：
@@ -25,6 +25,18 @@ git log --oneline --decorate -5
 ```powershell
 git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 fetch origin --prune
 ```
+
+### 1.1 当前进度（2026-08-20）
+
+- M0-M3 已完成并通过对应测试：工程化、账号/项目、TeachingBrief、资料解析、证据链和本地 RAG。
+- M4 已完成：确认后的 `TeachingBrief` 可编译为版本化 `CoursewarePlan`，并由同一份蓝图生成 PPTX、DOCX 和 HTML5 互动内容。
+- 数据库使用服务器 PostgreSQL 的本地 SSH 隧道：`127.0.0.1:15432`，数据库 `easy_teach_shared`；Alembic 当前为 `0007_task_queue_quality`。
+- 本地 RAG 索引可读，当前包含 2196 条证据；M4 使用确定性蓝图编译，不要求 `DEEPSEEK_API_KEY`。
+- M4 真实 HTTP 烟测已通过：PDF -> Evidence -> CoursewarePlan -> 生成任务 -> PPTX/DOCX/HTML 下载。
+- M5 已完成核心闭环：不可变成果快照、受限 `RevisionPatch`、版本冲突保护、恢复生成新版本、按版本幂等导出记录和下载；前端成果编辑页已接入版本历史与局部修改。
+- M6 队列基础已完成：Celery/Redis worker、生成与导出入队、任务幂等键、心跳、超时配置、自动重试、过期任务恢复和确定性质量报告；新增 `0007_task_queue_quality` 迁移及队列回归测试。
+- `origin/codex/project-implementation` 已在合并后被远程删除；继续开发使用当前 worktree 和 `origin/main`。
+- M6 剩余工作：Playwright 主流程、PPTX/DOCX 视觉验收、固定 AI/RAG 回归、生产 Compose 实机验收和最终 P0/P1 矩阵。
 
 ## 2. 旧工作区说明
 
@@ -192,7 +204,7 @@ PRD 文件：
 
 - `RevisionPatch` 解析和白名单操作。
 - 稳定 `slide_id`、不可变版本、回滚和重新导出。
-- Celery 任务进度、重试、超时、幂等和失败恢复。
+- 长任务进度、重试、超时、幂等和失败恢复（Celery worker 的基础实现已在 M6 落地）。
 - 导出文件记录、权限校验和下载链路。
 
 完成标准：只修改指定页面时，其他页面不发生变化；旧版本仍可下载。

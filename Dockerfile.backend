@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY --from=ghcr.io/astral-sh/uv:0.4.20 /uv /uvx /bin/
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev
+
+COPY backend ./backend
+COPY ai ./ai
+COPY gen ./gen
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
+COPY knowledge-base ./knowledge-base
+
+RUN mkdir -p /app/data/uploads /app/data/generated /app/data/chroma
+
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8000
+
+CMD ["uv", "run", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

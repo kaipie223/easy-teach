@@ -1,0 +1,372 @@
+"""Project-scoped material upload, parsing and evidence APIs."""
+
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
+from sqlalchemy.orm import Session as DBSession
+
+from backend.config import settings
+from backend.core.errors import ApiError
+from backend.core.ownership import get_material_for_user, get_project_for_user, get_session_for_user
+from backend.core.security import get_current_user
+from backend.db.database import get_db
+from backend.models.material import EvidenceChunk, Material, MaterialAnalysis, MaterialBinding
+from backend.models.user import User
+from backend.schemas import (
+    EvidenceInfo,
+    MaterialAnalysisInfo,
+    MaterialBindingInfo,
+    MaterialBindingReplaceRequest,
+    MaterialInfo,
+)
+from backend.services.materials import (
+    PARSER_VERSION,
+    MaterialValidationError,
+    checksum_sha256,
+    detect_file_type,
+    parse_material,
+)
+
+router = APIRouter()
+
+
+def _material_info(material: Material) -> MaterialInfo:
+    return MaterialInfo.model_validate(material)
+
+
+def _analysis_info(analysis: MaterialAnalysis) -> MaterialAnalysisInfo:
+    return MaterialAnalysisInfo.model_validate(analysis)
+
+
+def _binding_info(binding: MaterialBinding) -> MaterialBindingInfo:
+    return MaterialBindingInfo.model_validate(binding)
+
+
+def _evidence_info(evidence: EvidenceChunk) -> EvidenceInfo:
+    return EvidenceInfo.model_validate(evidence)
+
+
+@router.get("/projects/{project_id}/materials", response_model=list[MaterialInfo])
+def list_materials(
+    project_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    project = get_project_for_user(db, project_id, user)
+    materials = (
+        db.query(Material)
+        .filter(Material.project_id == project.project_id, Material.deleted_at.is_(None))
+        .order_by(Material.created_at.desc())
+        .all()
+    )
+    return [_material_info(material) for material in materials]
+
+
+@router.post("/projects/{project_id}/materials", response_model=MaterialInfo, status_code=201)
+async def upload_material(
+    project_id: str,
+    file: UploadFile = File(...),
+    session_id: str | None = Form(default=None),
+    ref_description: str = Form(default=""),
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    project = get_project_for_user(db, project_id, user)
+    if not file.filename:
+        raise ApiError("文件名为空", code="INVALID_MATERIAL_NAME", status_code=400)
+
+    content = await file.read(settings.max_upload_size_mb * 1024 * 1024 + 1)
+    if len(content) > settings.max_upload_size_mb * 1024 * 1024:
+        raise ApiError(
+            f"文件超过 {settings.max_upload_size_mb} MB 限制",
+            code="MATERIAL_TOO_LARGE",
+            status_code=413,
+        )
+
+    try:
+        file_type, mime_type = detect_file_type(file.filename, content)
+    except MaterialValidationError as exc:
+        raise ApiError(str(exc), code=exc.code, status_code=422, details=exc.details) from exc
+
+    if file_type == "video":
+        raise ApiError(
+            "视频资料上传已预留，解析将在后续阶段启用",
+            code="VIDEO_PARSING_DEFERRED",
+            status_code=422,
+            suggested_action="先使用 PDF、Word、PPT 或图片资料",
+        )
+    if file_type == "image" and len(content) > 15 * 1024 * 1024:
+        raise ApiError(
+            "图片超过 15 MB 限制",
+            code="IMAGE_TOO_LARGE",
+            status_code=413,
+        )
+
+    session = None
+    if session_id:
+        session = get_session_for_user(db, session_id, user)
+        if session.project_id != project.project_id:
+            raise ApiError("会话不属于当前项目", code="SESSION_PROJECT_MISMATCH", status_code=409)
+
+    material_id = f"mat_{uuid.uuid4().hex[:8]}"
+    safe_name = Path(file.filename).name
+    stored_path = settings.upload_dir / material_id / safe_name
+    stored_path.parent.mkdir(parents=True, exist_ok=True)
+    stored_path.write_bytes(content)
+
+    now = datetime.now(timezone.utc)
+    material = Material(
+        material_id=material_id,
+        owner_id=user.user_id,
+        project_id=project.project_id,
+        session_id=session.session_id if session else None,
+        original_name=safe_name,
+        file_type=file_type,
+        mime_type=mime_type,
+        stored_path=str(stored_path),
+        size_bytes=len(content),
+        checksum_sha256=checksum_sha256(content),
+        status="processing",
+        ref_description=ref_description.strip() or None,
+        created_at=now,
+        updated_at=now,
+    )
+    analysis = MaterialAnalysis(
+        analysis_id=f"analysis_{uuid.uuid4().hex[:8]}",
+        material_id=material_id,
+        run_number=1,
+        parser_name=f"builtin_{file_type}",
+        parser_version=PARSER_VERSION,
+        status="processing",
+        started_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add_all([material, analysis])
+    db.commit()
+
+    try:
+        parsed = await run_in_threadpool(parse_material, file_type, stored_path)
+        analysis.status = "completed"
+        analysis.text_content = parsed.text_content
+        analysis.result_json = parsed.result_json
+        analysis.page_count = parsed.page_count
+        analysis.slide_count = parsed.slide_count
+        analysis.completed_at = datetime.now(timezone.utc)
+        analysis.updated_at = analysis.completed_at
+        material.status = "ready"
+        material.updated_at = analysis.completed_at
+        for index, chunk in enumerate(parsed.chunks):
+            db.add(
+                EvidenceChunk(
+                    evidence_id=f"evidence_{uuid.uuid4().hex[:8]}",
+                    material_id=material.material_id,
+                    analysis_id=analysis.analysis_id,
+                    source_type=f"uploaded_{file_type}",
+                    chunk_index=index,
+                    locator_json=chunk.locator,
+                    text=chunk.text,
+                    metadata_json=chunk.metadata,
+                    usage_tags=[],
+                    content_hash=checksum_sha256(chunk.text.encode("utf-8")),
+                    is_valid=True,
+                    created_at=analysis.completed_at,
+                )
+            )
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        material = db.query(Material).filter(Material.material_id == material_id).one()
+        analysis = db.query(MaterialAnalysis).filter(MaterialAnalysis.analysis_id == analysis.analysis_id).one()
+        now = datetime.now(timezone.utc)
+        material.status = "failed"
+        material.error_code = "MATERIAL_PARSE_FAILED"
+        material.error_message = str(exc)
+        material.updated_at = now
+        analysis.status = "failed"
+        analysis.error_code = "MATERIAL_PARSE_FAILED"
+        analysis.error_message = str(exc)
+        analysis.completed_at = now
+        analysis.updated_at = now
+        db.commit()
+        raise ApiError(
+            "资料解析失败",
+            code="MATERIAL_PARSE_FAILED",
+            status_code=422,
+            details={"material_id": material_id},
+        ) from exc
+
+    return _material_info(material)
+
+
+@router.get("/materials/{material_id}", response_model=MaterialInfo)
+def get_material(
+    material_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    return _material_info(get_material_for_user(db, material_id, user))
+
+
+@router.get("/materials/{material_id}/download")
+def download_material(
+    material_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    material = get_material_for_user(db, material_id, user)
+    path = Path(material.stored_path)
+    if not path.is_file():
+        raise ApiError(
+            "资料文件不存在",
+            code="MATERIAL_FILE_NOT_FOUND",
+            status_code=404,
+            suggested_action="请重新上传该资料",
+        )
+    return FileResponse(
+        path,
+        media_type=material.mime_type or "application/octet-stream",
+        filename=material.original_name,
+    )
+
+
+@router.delete("/materials/{material_id}", response_model=MaterialInfo)
+def delete_material(
+    material_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    material = get_material_for_user(db, material_id, user)
+    now = datetime.now(timezone.utc)
+    material.deleted_at = now
+    material.status = "archived"
+    material.updated_at = now
+    (
+        db.query(MaterialBinding)
+        .filter(
+            MaterialBinding.material_id == material.material_id,
+            MaterialBinding.is_active.is_(True),
+        )
+        .update(
+            {"is_active": False, "invalidated_at": now, "updated_at": now},
+            synchronize_session=False,
+        )
+    )
+    (
+        db.query(EvidenceChunk)
+        .filter(
+            EvidenceChunk.material_id == material.material_id,
+            EvidenceChunk.is_valid.is_(True),
+        )
+        .update(
+            {
+                "is_valid": False,
+                "invalidated_at": now,
+                "invalidation_reason": "material_deleted",
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    db.refresh(material)
+    return _material_info(material)
+
+
+@router.get("/materials/{material_id}/analysis", response_model=MaterialAnalysisInfo)
+def get_material_analysis(
+    material_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    material = get_material_for_user(db, material_id, user)
+    analysis = (
+        db.query(MaterialAnalysis)
+        .filter(MaterialAnalysis.material_id == material.material_id)
+        .order_by(MaterialAnalysis.run_number.desc())
+        .first()
+    )
+    if analysis is None:
+        raise ApiError("资料解析记录不存在", code="MATERIAL_ANALYSIS_NOT_FOUND", status_code=404)
+    return _analysis_info(analysis)
+
+
+@router.get("/materials/{material_id}/evidence", response_model=list[EvidenceInfo])
+def list_material_evidence(
+    material_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    material = get_material_for_user(db, material_id, user)
+    evidence = (
+        db.query(EvidenceChunk)
+        .filter(EvidenceChunk.material_id == material.material_id, EvidenceChunk.is_valid.is_(True))
+        .order_by(EvidenceChunk.chunk_index.asc())
+        .all()
+    )
+    return [_evidence_info(item) for item in evidence]
+
+
+@router.put("/materials/{material_id}/bindings", response_model=list[MaterialBindingInfo])
+def replace_material_bindings(
+    material_id: str,
+    request: MaterialBindingReplaceRequest,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    material = get_material_for_user(db, material_id, user)
+    if material.project_id is None:
+        raise ApiError("资料尚未关联项目", code="MATERIAL_PROJECT_REQUIRED", status_code=409)
+    project = get_project_for_user(db, material.project_id, user)
+    now = datetime.now(timezone.utc)
+    (
+        db.query(MaterialBinding)
+        .filter(
+            MaterialBinding.material_id == material.material_id,
+            MaterialBinding.project_id == project.project_id,
+            MaterialBinding.is_active.is_(True),
+        )
+        .update({"is_active": False, "invalidated_at": now, "updated_at": now}, synchronize_session=False)
+    )
+    bindings = []
+    for item in request.bindings:
+        binding = MaterialBinding(
+            binding_id=f"bind_{uuid.uuid4().hex[:8]}",
+            material_id=material.material_id,
+            project_id=project.project_id,
+            created_by=user.user_id,
+            usage_type=item.usage_type.value,
+            target_type=item.target_type.value,
+            target_id=item.target_id,
+            teacher_instruction=item.teacher_instruction,
+            suggested_by_ai=item.suggested_by_ai,
+            confirmed_by_teacher=item.confirmed_by_teacher,
+            is_active=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(binding)
+        bindings.append(binding)
+    db.commit()
+    for binding in bindings:
+        db.refresh(binding)
+    return [_binding_info(binding) for binding in bindings]
+
+
+@router.get("/materials/{material_id}/bindings", response_model=list[MaterialBindingInfo])
+def list_material_bindings(
+    material_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    material = get_material_for_user(db, material_id, user)
+    bindings = (
+        db.query(MaterialBinding)
+        .filter(MaterialBinding.material_id == material.material_id, MaterialBinding.is_active.is_(True))
+        .order_by(MaterialBinding.created_at.asc())
+        .all()
+    )
+    return [_binding_info(binding) for binding in bindings]

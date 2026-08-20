@@ -1,5 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { getAccessToken } from '@/api'
+import { getAccessToken, USER_KEY } from '@/api'
 
 const routes = [
   {
@@ -39,6 +39,12 @@ const routes = [
     component: () => import('../views/MaterialsView.vue'),
   },
   {
+    path: '/knowledge',
+    name: 'knowledge',
+    meta: { title: '知识库管理', admin: true },
+    component: () => import('../views/KnowledgeView.vue'),
+  },
+  {
     path: '/blueprint',
     name: 'blueprint',
     meta: { title: '教学蓝图' },
@@ -63,6 +69,14 @@ const router = createRouter({
   routes,
 })
 
+function hasAdminRole() {
+  try {
+    return JSON.parse(localStorage.getItem(USER_KEY) || 'null')?.role === 'admin'
+  } catch {
+    return false
+  }
+}
+
 router.beforeEach((to) => {
   if (to.meta.public) {
     if (to.name === 'login' && getAccessToken()) return { name: 'dashboard' }
@@ -70,6 +84,9 @@ router.beforeEach((to) => {
   }
   if (!getAccessToken()) {
     return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.admin && !hasAdminRole()) {
+    return { name: 'dashboard' }
   }
   return true
 })

@@ -8,7 +8,8 @@
 |------|------|
 | 前端 | Vue 3 + Vite + Element Plus |
 | 后端 | FastAPI (Python 3.11) |
-| 数据库 | SQLite（开发）→ PostgreSQL（上线） |
+| 数据库 | PostgreSQL（开发/上线）或 SQLite 兼容模式 |
+| 任务 | Celery + Redis |
 | LLM | DeepSeek-V3 API |
 | 向量库 | ChromaDB |
 | RAG | LangChain |
@@ -24,6 +25,16 @@ uv sync
 uv run alembic upgrade head
 uv run uvicorn backend.main:app --reload --port 8000
 ```
+
+另开一个终端启动长任务 worker（Windows 本地开发使用 `solo` 池）：
+
+```bash
+uv run celery -A backend.celery_app.celery_app worker --loglevel=INFO --pool=solo
+```
+
+worker 未启动时，生成和导出接口会明确返回 `TASK_QUEUE_UNAVAILABLE` 或任务失败，
+不会把长任务挂在 FastAPI 请求进程中。生产环境可直接使用
+`docker-compose.production.yml`，其中包含 API、worker、Redis、PostgreSQL、Web 和 Nginx。
 
 首次构建本地知识库：
 
@@ -43,6 +54,16 @@ npm run dev
 ```
 
 前端唯一产品工程是 `frontend/`，默认通过 Vite 代理访问 `/api/v1`。
+
+### 生产部署和备份
+
+```bash
+docker compose -f docker-compose.production.yml up -d --build
+./scripts/backup.sh
+```
+
+备份脚本同时保存 PostgreSQL dump 和应用数据卷。恢复脚本默认拒绝执行，必须显式设置
+`CONFIRM_RESTORE=YES`，避免误覆盖线上数据；详见 `docs/DEPLOYMENT_M6.md`。
 
 ## 项目结构
 

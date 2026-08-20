@@ -1,5 +1,4 @@
 import os
-import requests
 
 
 def parse_audio(file_path: str, provider: str = "doubao") -> dict:
@@ -13,9 +12,6 @@ def parse_audio(file_path: str, provider: str = "doubao") -> dict:
 
     try:
         # 1. 读取音频文件数据
-        with open(file_path, "rb") as f:
-            audio_data = f.read()
-
         # ==========================================
         # 2. 核心大模型路由机制 (Model Router)
         # ==========================================
@@ -25,15 +21,15 @@ def parse_audio(file_path: str, provider: str = "doubao") -> dict:
             # 【预留：豆包 API 请求代码】
             # headers = {"Authorization": "Bearer 你的豆包API_KEY"}
             # response = requests.post("豆包语音接口地址", ...)
-            result_text = f"【豆包大模型识别成功】提取出的语音内容..."
+            result_text = "【豆包大模型识别成功】提取出的语音内容..."
 
         elif provider == "baidu":
             # 【预留：百度智能云语音 API 请求代码】
-            result_text = f"【百度大模型识别成功】提取出的语音内容..."
+            result_text = "【百度大模型识别成功】提取出的语音内容..."
 
         elif provider == "whisper":
             # 【预留：OpenAI Whisper API 请求代码】
-            result_text = f"【Whisper识别成功】提取出的语音内容..."
+            result_text = "【Whisper识别成功】提取出的语音内容..."
 
         else:
             return {"status": "error", "message": f"系统暂不支持该语音大模型: {provider}", "data": ""}
