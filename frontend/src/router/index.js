@@ -45,6 +45,12 @@ const routes = [
     component: () => import('../views/KnowledgeView.vue'),
   },
   {
+    path: '/admin',
+    name: 'admin',
+    meta: { title: '管理员工作台', admin: true },
+    component: () => import('../views/AdminView.vue'),
+  },
+  {
     path: '/blueprint',
     name: 'blueprint',
     meta: { title: '教学蓝图' },

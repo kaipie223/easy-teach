@@ -33,6 +33,7 @@ import {
   Reading,
   Setting,
   User,
+  UserFilled,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 
@@ -69,13 +70,22 @@ const navItems = computed(() => [
     active: route.name === 'materials',
   },
   ...(auth.user?.role === 'admin'
-    ? [{
-      key: 'knowledge',
-      label: '知识库管理',
-      to: '/knowledge',
-      icon: Collection,
-      active: route.name === 'knowledge',
-    }]
+    ? [
+      {
+        key: 'admin',
+        label: '管理员工作台',
+        to: '/admin',
+        icon: UserFilled,
+        active: route.name === 'admin',
+      },
+      {
+        key: 'knowledge',
+        label: '知识库管理',
+        to: '/knowledge',
+        icon: Collection,
+        active: route.name === 'knowledge',
+      },
+    ]
     : []),
   {
     key: 'blueprint',

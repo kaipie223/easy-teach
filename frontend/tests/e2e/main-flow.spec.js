@@ -16,6 +16,9 @@ test('teacher can register, create a project, and enter course chat', async ({ p
 
     await expect(page).toHaveURL(/\/$/)
     await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible()
+    await page.goto('/admin')
+    await expect(page).toHaveURL(/\/$/)
+    await expect(page.getByRole('link', { name: '管理员工作台' })).not.toBeVisible()
     token = await page.evaluate(() => localStorage.getItem('easy_teach_access_token'))
     await page.getByRole('button', { name: '新建项目' }).click()
     await expect(page).toHaveURL(/\/home$/)
@@ -37,4 +40,30 @@ test('teacher can register, create a project, and enter course chat', async ({ p
       })
     }
   }
+})
+
+test('admin can review the server-backed user directory', async ({ page }) => {
+  const email = process.env.E2E_ADMIN_EMAIL
+  const password = process.env.E2E_ADMIN_PASSWORD
+  test.skip(!email || !password, 'Set E2E_ADMIN_EMAIL and E2E_ADMIN_PASSWORD to run the admin smoke test')
+
+  await page.goto('/login')
+  await page.getByPlaceholder('teacher@example.com').fill(email)
+  await page.getByPlaceholder('请输入密码').fill(password)
+  await page.getByRole('button', { name: '登录', exact: true }).click()
+
+  await expect(page).toHaveURL(/\/$/)
+  await expect(page.getByRole('link', { name: '管理员工作台' })).toBeVisible()
+  await page.getByRole('link', { name: '管理员工作台' }).click()
+
+  await expect(page).toHaveURL(/\/admin$/)
+  await expect(page.getByRole('heading', { name: '管理员工作台' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '用户目录' })).toBeVisible()
+  await expect(page.getByText(email, { exact: true })).toBeVisible()
+
+  await page.getByLabel('搜索用户').fill(email)
+  await expect(page.getByText(email, { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '清除筛选' }).click()
+  await page.getByRole('button', { name: '刷新用户' }).click()
+  await expect(page.getByText(email, { exact: true })).toBeVisible()
 })

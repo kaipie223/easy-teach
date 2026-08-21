@@ -128,6 +128,12 @@ export function fetchCurrentUser() {
   return api.get('/auth/me')
 }
 
+// ── 管理员 ────────────────────────────────────────
+
+export function fetchAdminUsers() {
+  return api.get('/admin/users')
+}
+
 // ── 项目 ──────────────────────────────────────────
 
 export function fetchProjects(includeDeleted = false) {
