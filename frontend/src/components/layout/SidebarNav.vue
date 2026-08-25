@@ -25,6 +25,7 @@ import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
   ChatDotRound,
+  Collection,
   Download,
   EditPen,
   FolderOpened,
@@ -32,9 +33,12 @@ import {
   Reading,
   Setting,
   User,
+  UserFilled,
 } from '@element-plus/icons-vue'
+import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
+const auth = useAuthStore()
 
 const navItems = computed(() => [
   {
@@ -65,6 +69,24 @@ const navItems = computed(() => [
     icon: FolderOpened,
     active: route.name === 'materials',
   },
+  ...(auth.user?.role === 'admin'
+    ? [
+      {
+        key: 'admin',
+        label: '管理员工作台',
+        to: '/admin',
+        icon: UserFilled,
+        active: route.name === 'admin',
+      },
+      {
+        key: 'knowledge',
+        label: '知识库管理',
+        to: '/knowledge',
+        icon: Collection,
+        active: route.name === 'knowledge',
+      },
+    ]
+    : []),
   {
     key: 'blueprint',
     label: '教学蓝图',

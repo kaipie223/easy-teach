@@ -65,13 +65,13 @@ export const useSessionStore = defineStore('session', () => {
   // ── 会话操作 ──────────────────────────────────
 
   /** 创建新会话 */
-  async function createSession(courseName, projectId = null) {
+  async function createSession(courseName, requestedProjectId = null) {
     isLoading.value = true
     error.value = null
     try {
-      const res = await createSessionRequest(courseName, projectId)
+      const res = await createSessionRequest(courseName, requestedProjectId)
       sessionId.value = res.data.session_id
-      projectId.value = res.data.project_id || projectId
+      projectId.value = res.data.project_id || requestedProjectId
       brief.value = null
       clearMessages()
       return res.data

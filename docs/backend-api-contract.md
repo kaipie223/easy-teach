@@ -1,6 +1,6 @@
 # Easy-Teach Backend API Contract
 
-This document describes the M0, M1 and M2 API that is implemented in `backend/`.
+This document describes the M0 through M5 API that is implemented in `backend/`.
 The canonical API prefix is `/api/v1`. The root health endpoints are outside
 that prefix.
 
@@ -206,6 +206,125 @@ returns `409` with code `BRIEF_VERSION_CONFLICT`. A successful confirmation
 marks that immutable version as `confirmed`, locks the session intent state,
 and records it as the project's current version.
 
+## Courseware plans and generation
+
+M4 compiles a confirmed TeachingBrief into one versioned `CoursewarePlan`. The
+plan contains `SlideSpec`, `LessonPlanSectionSpec`, `InteractionSpec` and
+locatable `EvidenceRef` entries. PPTX, DOCX and HTML output all consume this
+same plan JSON; they do not independently rebuild the teaching structure.
+
+### `POST /api/v1/projects/{project_id}/plan`
+
+Requires a confirmed TeachingBrief. The optional request body is:
+
+```json
+{"force_rebuild": false}
+```
+
+Returns `201` with the latest or newly compiled `CoursewarePlan`. Rebuilding
+after a new confirmed brief creates the next immutable plan version. A plan
+includes stable IDs such as `slide_001`, lesson section durations, interaction
+items and source locators such as PDF page numbers.
+
+### `GET /api/v1/projects/{project_id}/plan`
+
+Returns the newest plan version. A project without a plan returns
+`PLAN_NOT_FOUND`.
+
+### `POST /api/v1/projects/{project_id}/generate`
+
+Request body is optional; when supplied it can select a plan version:
+
+```json
+{"plan_id": "plan_12345678"}
+```
+
+Returns `202` with a task. The task contains `plan_id` and eventually three
+outputs: `pptx`, `docx` and `html`. Use the existing task status and download
+endpoints to poll and retrieve them. Local deterministic rendering is used
+when no external model key is configured; an external LLM is not required to
+validate the blueprint-to-artifact contract.
+
+## Revisions and immutable artifact versions
+
+The first project generation creates an immutable `ArtifactVersion` snapshot
+bound to the selected `CoursewarePlan`. Every successful edit or restore
+creates a new snapshot; old versions are never overwritten or deleted.
+
+### `GET /api/v1/projects/{project_id}/versions`
+
+Returns versions newest first. Each item includes `artifact_version_id`,
+`version`, `base_version_id`, `summary` and the complete validated
+`CoursewarePlan` snapshot.
+
+### `POST /api/v1/projects/{project_id}/revisions/interpret`
+
+Creates a preview `RevisionPatch` without modifying the base version.
+
+Request:
+
+```json
+{
+  "instruction": "简化第 3 页",
+  "base_version_id": "av_12345678"
+}
+```
+
+The local deterministic interpreter currently maps page title changes,
+simplify/expand/case edits, page deletion and page movement. The response
+lists stable target IDs, allowed operations, cascade checks and whether
+confirmation is required. Unsupported or ambiguous instructions return a
+structured error rather than guessing a target.
+
+### `POST /api/v1/projects/{project_id}/revisions/apply`
+
+Request:
+
+```json
+{"patch_id": "patch_12345678", "confirmed": true}
+```
+
+Applies a preview against its exact `base_version_id` and creates the next
+version. If the project has advanced, the API returns `VERSION_CONFLICT` and
+leaves the old patch and versions unchanged.
+
+### `POST /api/v1/projects/{project_id}/versions/{version_id}/restore`
+
+Copies the selected snapshot into a new current version. Restoring v1 after
+v2 therefore creates v3; v1 and v2 remain available.
+
+## Version-bound exports
+
+### `GET /api/v1/projects/{project_id}/exports`
+
+Lists export records, optionally filtered by `artifact_version_id`.
+
+### `POST /api/v1/projects/{project_id}/exports`
+
+Creates idempotent export records for `pptx`, `docx` and/or `html`:
+
+```json
+{
+  "artifact_version_id": "av_12345678",
+  "formats": ["pptx", "docx", "html"],
+  "force": false
+}
+```
+
+Each record is tied to one immutable version and exposes `pending`,
+`processing`, `completed` or `failed` status. Repeating the same request
+returns an existing active/completed record unless `force` is true.
+
+### `GET /api/v1/exports/{export_id}`
+
+Returns one export status and its checksum/filename when completed.
+
+### `GET /api/v1/exports/{export_id}/download`
+
+Downloads the file only after the version-bound export is completed and the
+requester passes the project ownership check. Export filenames include the
+course title, artifact version and export date.
+
 ## Materials
 
 ### `POST /api/v1/upload`
@@ -218,6 +337,33 @@ Multipart fields:
 
 Returns `201` with `FileInfo`. The server stores files under a random file ID
 directory and enforces `MAX_UPLOAD_SIZE_MB`.
+
+### Project materials
+
+The current project workflow uses the following authenticated endpoints:
+
+```text
+GET    /api/v1/projects/{project_id}/materials
+POST   /api/v1/projects/{project_id}/materials
+GET    /api/v1/materials/{material_id}
+GET    /api/v1/materials/{material_id}/analysis
+GET    /api/v1/materials/{material_id}/evidence
+GET    /api/v1/materials/{material_id}/bindings
+PUT    /api/v1/materials/{material_id}/bindings
+GET    /api/v1/materials/{material_id}/download
+DELETE /api/v1/materials/{material_id}
+```
+
+Uploads are parsed synchronously with page, slide, paragraph or image metadata
+stored in `material_analyses` and `evidence_chunks`. The material delete route
+is a soft delete: active bindings and evidence are invalidated, while the
+stored file remains isolated on disk. Video uploads return
+`VIDEO_PARSING_DEFERRED` until the later video milestone.
+
+The binding payload accepts multiple `usage_type` values, including
+`content_basis`, `knowledge_structure`, `case_source`, `visual_style`,
+`interaction_asset` and `archive_only`. Each binding also has a
+`target_type` scope.
 
 ### `GET /api/v1/files/{file_id}`
 
@@ -239,15 +385,24 @@ not create a second message record.
 Request:
 
 ```json
-{"session_id": "s_12345678"}
+{"session_id": "s_12345678", "idempotency_key": "teacher-req-001"}
 ```
 
 Returns `202` and a task with one of the statuses `pending`, `processing`,
-`completed` or `failed`.
+`completed` or `failed`. Repeating the request with the same authenticated
+user and `idempotency_key` returns the original task instead of creating a
+second generation job.
 
 ### `GET /api/v1/tasks/{task_id}/status`
 
 Returns the current task status and generated output metadata.
+
+The response also exposes `retry_count`, `max_retries`, `error_code`,
+`started_at`, `updated_at` and `completed_at`. Generation is dispatched to
+Celery through Redis; the API process never executes the long-running render.
+The worker retries transient failures up to `TASK_MAX_RETRIES`, applies the
+configured soft/hard time limits, and the periodic stale-job recovery task
+requeues jobs whose heartbeat lease has expired.
 
 ### `POST /api/v1/feedback`
 
@@ -269,6 +424,41 @@ Returns the file bytes after the file record and path have been verified.
 
 Returns the user list for administrators. A valid non-admin token receives
 `403` and an unauthenticated request receives `401`.
+
+## Knowledge base
+
+Knowledge-base writes require an administrator token. Teachers can list only
+enabled, indexed documents and can use the search endpoint.
+
+```text
+GET    /api/v1/knowledge/documents
+POST   /api/v1/knowledge/documents              # multipart import
+PATCH  /api/v1/knowledge/documents/{id}        # title/enabled
+DELETE /api/v1/knowledge/documents/{id}        # soft delete
+POST   /api/v1/knowledge/index                  # rebuild enabled docs
+POST   /api/v1/knowledge/documents/{id}/index   # rebuild and verify one doc
+POST   /api/v1/knowledge/search                 # authenticated retrieval
+```
+
+Import persists the document and immutable `evidence_chunks` first. Indexing
+rebuilds the `knowledge_base` Chroma collection from enabled, valid evidence
+and preserves `evidence_id`, document ID and locator metadata in retrieval
+results. A model download or embedding failure marks affected documents as
+`failed`; the same index endpoint can be retried after the model service is
+available. The current implementation is a synchronous request with a long
+client timeout; Celery progress reporting remains a later task milestone.
+
+## M6 quality and queue contract
+
+Every project artifact version stores a deterministic quality report with
+`quality_status` (`pending`, `passed`, `warning` or `failed`). Blocking
+structural issues fail generation; warnings such as missing evidence links do
+not discard the artifact and remain visible in the version response.
+
+Celery task names are `easy_teach.generate`, `easy_teach.export` and
+`easy_teach.recover_stale_jobs`. The worker uses an independent SQLAlchemy
+session, late acknowledgements and a single-job prefetch to keep task state
+recoverable after a worker restart.
 
 ## Compatibility Note
 

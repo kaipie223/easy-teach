@@ -5,6 +5,10 @@ from .task import Task
 from .user import User
 from .project import Project
 from .brief import TeachingBrief
+from .material import EvidenceChunk, Material, MaterialAnalysis, MaterialBinding
+from .knowledge import KnowledgeDocument
+from .courseware import CoursewarePlan
+from .versioning import ArtifactVersion, ExportRecord, RevisionPatch
 
 __all__ = [
     "Base",
@@ -16,4 +20,13 @@ __all__ = [
     "User",
     "Project",
     "TeachingBrief",
+    "Material",
+    "MaterialAnalysis",
+    "MaterialBinding",
+    "EvidenceChunk",
+    "KnowledgeDocument",
+    "CoursewarePlan",
+    "ArtifactVersion",
+    "RevisionPatch",
+    "ExportRecord",
 ]

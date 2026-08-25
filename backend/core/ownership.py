@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session as DBSession
 
 from backend.core.errors import ApiError
 from backend.models.file import FileRecord
+from backend.models.material import Material
 from backend.models.project import Project
 from backend.models.session import Session
 from backend.models.task import Task
@@ -54,6 +55,19 @@ def get_file_for_user(db: DBSession, file_id: str, user: User | None) -> FileRec
     if record is None:
         raise ApiError("文件不存在", code="FILE_NOT_FOUND", status_code=404)
     return record
+
+
+def get_material_for_user(db: DBSession, material_id: str, user: User) -> Material:
+    query = db.query(Material).filter(
+        Material.material_id == material_id,
+        Material.deleted_at.is_(None),
+    )
+    if user.role != "admin":
+        query = query.filter(Material.owner_id == user.user_id)
+    material = query.first()
+    if material is None:
+        raise ApiError("资料不存在", code="MATERIAL_NOT_FOUND", status_code=404)
+    return material
 
 
 def get_task_for_user(db: DBSession, task_id: str, user: User | None) -> Task:

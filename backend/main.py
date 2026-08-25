@@ -16,10 +16,14 @@ from backend.routers import (
     auth,
     brief,
     chat,
+    courseware,
     export,
     generate,
+    knowledge,
+    materials,
     project_chat,
     projects,
+    revisions,
     session,
     speech,
     upload,
@@ -84,10 +88,15 @@ app.include_router(auth.router, prefix="/api/v1/auth", tags=["Auth"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["Admin"])
 app.include_router(projects.router, prefix="/api/v1/projects", tags=["Projects"])
 app.include_router(brief.router, prefix="/api/v1/projects", tags=["TeachingBrief"])
+app.include_router(courseware.router, prefix="/api/v1/projects", tags=["Courseware"])
+app.include_router(revisions.project_router, prefix="/api/v1/projects", tags=["Revisions"])
+app.include_router(revisions.export_router, prefix="/api/v1/exports", tags=["Exports"])
 app.include_router(project_chat.router, prefix="/api/v1/projects", tags=["ProjectChat"])
 app.include_router(session.router, prefix="/api/v1/sessions", tags=["Sessions"])
 app.include_router(chat.router, prefix="/api/v1/sessions", tags=["Chat"])
 app.include_router(upload.router, prefix="/api/v1", tags=["Files"])
+app.include_router(materials.router, prefix="/api/v1", tags=["Materials"])
+app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledge"])
 app.include_router(generate.router, prefix="/api/v1", tags=["Generation"])
 app.include_router(export.router, prefix="/api/v1", tags=["Export"])
 app.include_router(speech.router, prefix="/api/v1/speech", tags=["Speech"])
@@ -120,7 +129,7 @@ def health():
 
 
 def _dependency_checks() -> dict[str, dict[str, str]]:
-    """Return dependency status without initializing model or embedding clients."""
+    """Return dependency status, including persisted Chroma index readability."""
     checks: dict[str, dict[str, str]] = {}
 
     try:
@@ -141,10 +150,22 @@ def _dependency_checks() -> dict[str, dict[str, str]]:
             client = chromadb.PersistentClient(path=str(chroma_path))
             collections = client.list_collections()
             names = [item.name if hasattr(item, "name") else str(item) for item in collections]
-            checks["chroma"] = {
-                "status": "ok" if "knowledge_base" in names else "not_indexed",
-                "path": str(chroma_path),
-            }
+            if "knowledge_base" not in names:
+                checks["chroma"] = {"status": "not_indexed", "path": str(chroma_path), "count": 0}
+            else:
+                collection = client.get_collection("knowledge_base")
+                count = collection.count()
+                # count() only reads Chroma metadata. peek() also opens the
+                # persisted HNSW index and catches incomplete/corrupt files.
+                if count > 0:
+                    preview = collection.peek(limit=1)
+                    if not preview.get("ids"):
+                        raise RuntimeError("Chroma collection contains records but cannot read an index entry")
+                checks["chroma"] = {
+                    "status": "ok" if count > 0 else "not_indexed",
+                    "path": str(chroma_path),
+                    "count": count,
+                }
         except Exception as exc:
             logger.warning("Chroma health check failed: %s", exc)
             checks["chroma"] = {"status": "error", "message": str(exc)}
