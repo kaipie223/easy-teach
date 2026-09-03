@@ -442,11 +442,15 @@ class TeachingBriefConfirmRequest(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 class IntentResult(BaseModel):
+    course_name: str = ""
+    subject: str = ""
+    grade: str = ""
     teaching_goal: str = ""
     target_audience: str = ""
     duration_minutes: int = 45
     knowledge_points: list[KnowledgePoint] = Field(default_factory=list)
     logic_flow: list[str] = Field(default_factory=list)
+    focus_and_difficulties: str = ""
     style_preference: str = ""
     missing_info: list[str] = Field(default_factory=list)
     follow_up_question: str | None = None

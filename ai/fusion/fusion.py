@@ -19,6 +19,25 @@ def _extract_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _coerce_logic_flow(value) -> list[str]:
+    """把 LLM 返回的 logic_flow 统一成 list[str]，避免下游按字符遍历。"""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if str(v).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        for sep in (" → ", "→", " -> ", "->", "，", ",", "、"):
+            if sep in text:
+                parts = [p.strip() for p in text.split(sep) if p.strip()]
+                if len(parts) > 1:
+                    return parts
+        return [text]
+    return []
+
+
 class KnowledgeFuser:
     """知识融合器 — 综合意图、RAG 检索结果和参考资料生成课件指令集"""
 
@@ -28,10 +47,14 @@ class KnowledgeFuser:
         with open(prompt_path, "r", encoding="utf-8") as f:
             self.prompt_fusion = f.read()
 
-    def fuse(self, intent: IntentResult, rag_docs: list[RAGDocument],
+    def fuse(self, intent: IntentResult | dict, rag_docs: list[RAGDocument],
              references: list[dict] | None = None) -> dict:
         """融合多源信息，返回 GenerationInstruction 字典"""
-        intent_json = json.dumps(intent.model_dump(), ensure_ascii=False)
+        if isinstance(intent, IntentResult):
+            intent_dict = intent.model_dump()
+        else:
+            intent_dict = intent or {}
+        intent_json = json.dumps(intent_dict, ensure_ascii=False)
 
         rag_parts = []
         for i, doc in enumerate(rag_docs):
@@ -60,7 +83,10 @@ class KnowledgeFuser:
                 response_format={"type": "json_object"},
                 timeout=30,
             )
-            return _extract_json(resp.choices[0].message.content)
+            result = _extract_json(resp.choices[0].message.content)
+            if isinstance(result, dict) and "logic_flow" in result:
+                result["logic_flow"] = _coerce_logic_flow(result["logic_flow"])
+            return result
         except Exception as e:
             print(f"[fusion] LLM 调用失败: {e}")
             return {"error": str(e)}
