@@ -30,6 +30,28 @@ def _parse_knowledge_points(raw_kps: list[dict]) -> list[KnowledgePoint]:
     ]
 
 
+def _coerce_logic_flow(value) -> list[str]:
+    """把 LLM 返回的 logic_flow 统一成 list[str]。
+
+    兼容三种情况：已经是 list、单个字符串（含 → / -> / ， 等分隔符）、缺失。
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value if str(v).strip()]
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        for sep in (" → ", "→", " -> ", "->", "，", ",", "、"):
+            if sep in text:
+                parts = [p.strip() for p in text.split(sep) if p.strip()]
+                if len(parts) > 1:
+                    return parts
+        return [text]
+    return []
+
+
 def _load_prompt(name: str) -> str:
     path = os.path.join(PROMPT_DIR, name)
     with open(path, "r", encoding="utf-8") as f:
@@ -71,6 +93,33 @@ class IntentAnalyzer:
             lines.append(f"{role}: {m.get('content', '')}")
         return "\n".join(lines)
 
+    def _build_intent_result(
+        self,
+        raw: dict,
+        *,
+        is_complete: bool,
+        missing_info: list[str],
+        follow_up_question: str | None = None,
+        confirm_summary: str | None = None,
+    ) -> IntentResult:
+        """把 LLM 返回的 raw dict 统一映射为 IntentResult，避免字段丢失。"""
+        return IntentResult(
+            course_name=raw.get("course_name", ""),
+            subject=raw.get("subject", ""),
+            grade=raw.get("grade", ""),
+            teaching_goal=raw.get("teaching_goal", ""),
+            target_audience=raw.get("target_audience", ""),
+            duration_minutes=raw.get("duration_minutes") or 45,
+            knowledge_points=_parse_knowledge_points(raw.get("knowledge_points", [])),
+            logic_flow=_coerce_logic_flow(raw.get("logic_flow")),
+            focus_and_difficulties=raw.get("focus_and_difficulties", ""),
+            style_preference=raw.get("style_preference", ""),
+            missing_info=missing_info,
+            follow_up_question=follow_up_question,
+            confirm_summary=confirm_summary,
+            is_complete=is_complete,
+        )
+
     def analyze(self, session_id: str, messages: list[dict],
                 uploaded_files: list[str] | None = None) -> IntentResult:
         self._init_session(session_id)
@@ -83,8 +132,8 @@ class IntentAnalyzer:
             raw = self._call_llm_analyze(history_text)
         except Exception as e:
             return IntentResult(
-                teaching_goal="",
                 missing_info=[f"LLM调用失败: {str(e)}"],
+                is_complete=False,
             )
 
         session["intent_raw"] = raw
@@ -93,13 +142,8 @@ class IntentAnalyzer:
 
         if state == State.PROBING:
             follow_up = self._gen_follow_up(raw)
-            return IntentResult(
-                teaching_goal=raw.get("teaching_goal", ""),
-                target_audience=raw.get("target_audience", ""),
-                duration_minutes=raw.get("duration_minutes", 45),
-                knowledge_points=_parse_knowledge_points(raw.get("knowledge_points", [])),
-                logic_flow=raw.get("logic_flow", []),
-                style_preference=raw.get("style_preference", ""),
+            return self._build_intent_result(
+                raw,
                 is_complete=False,
                 missing_info=raw.get("missing_info", []),
                 follow_up_question=follow_up.get("question_text", ""),
@@ -107,30 +151,16 @@ class IntentAnalyzer:
 
         if state == State.CONFIRMING:
             confirm = self._gen_confirm(raw)
-            return IntentResult(
-                teaching_goal=raw.get("teaching_goal", ""),
-                target_audience=raw.get("target_audience", ""),
-                duration_minutes=raw.get("duration_minutes", 45),
-                knowledge_points=_parse_knowledge_points(raw.get("knowledge_points", [])),
-                logic_flow=raw.get("logic_flow", []),
-                style_preference=raw.get("style_preference", ""),
+            return self._build_intent_result(
+                raw,
                 is_complete=True,
                 missing_info=[],
                 confirm_summary=confirm.get("summary", ""),
             )
 
         # LOCKED state — 返回锁定的意图
-        locked = session.get("locked_intent", raw)
-        return IntentResult(
-            teaching_goal=locked.get("teaching_goal", ""),
-            target_audience=locked.get("target_audience", ""),
-            duration_minutes=locked.get("duration_minutes", 45),
-            knowledge_points=_parse_knowledge_points(locked.get("knowledge_points", [])),
-            logic_flow=locked.get("logic_flow", []),
-            style_preference=locked.get("style_preference", ""),
-            is_complete=True,
-            missing_info=[],
-        )
+        locked = session.get("locked_intent") or raw
+        return self._build_intent_result(locked, is_complete=True, missing_info=[])
 
     def lock_intent(self, session_id: str) -> IntentResult:
         session = self.sessions.get(session_id)
@@ -141,16 +171,7 @@ class IntentAnalyzer:
         session["locked_intent"] = session["intent_raw"]
 
         raw = session["locked_intent"]
-        return IntentResult(
-            teaching_goal=raw.get("teaching_goal", ""),
-            target_audience=raw.get("target_audience", ""),
-            duration_minutes=raw.get("duration_minutes", 45),
-            knowledge_points=_parse_knowledge_points(raw.get("knowledge_points", [])),
-            logic_flow=raw.get("logic_flow", []),
-            style_preference=raw.get("style_preference", ""),
-            is_complete=True,
-            missing_info=[],
-        )
+        return self._build_intent_result(raw, is_complete=True, missing_info=[])
 
     def update_intent(self, session_id: str, modification_text: str) -> IntentResult:
         """根据教师修改意见更新意图"""
@@ -176,9 +197,10 @@ class IntentAnalyzer:
         missing = intent_dict.get("missing_info", [])
         intent_summary = json.dumps({
             "course_name": intent_dict.get("course_name"),
+            "subject": intent_dict.get("subject"),
+            "grade": intent_dict.get("grade"),
             "teaching_goal": intent_dict.get("teaching_goal"),
             "target_audience": intent_dict.get("target_audience"),
-            "subject": intent_dict.get("subject"),
         }, ensure_ascii=False)
 
         prompt = (self.prompt_follow_up

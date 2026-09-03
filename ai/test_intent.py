@@ -29,7 +29,7 @@ print(f"follow_up: {result.follow_up_question}")
 
 assert analyzer.get_state(sid) == "probing", "应处于probing状态"
 assert len(result.missing_info) > 0, "missing_info应非空"
-print("  ✓ 模糊输入正确触发追问")
+print("  [OK] 模糊输入正确触发追问")
 
 # 第2轮：补充信息
 print("\n--- 第2轮：补充信息 ---")
@@ -46,7 +46,7 @@ print(f"锁定后 teaching_goal: {locked.teaching_goal}")
 print(f"锁定后 is_complete: {locked.is_complete}")
 
 assert analyzer.get_state(sid) == "locked", "应处于locked状态"
-print("  ✓ 意图已锁定")
+print("  [OK] 意图已锁定")
 
 # 输出原始意图（用于后续 fusion）
 raw = analyzer.get_raw_intent(sid)
