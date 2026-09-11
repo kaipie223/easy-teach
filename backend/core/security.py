@@ -83,18 +83,6 @@ def get_current_user(
     return _decode_user(credentials, db)
 
 
-def get_optional_current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-    db: DBSession = Depends(get_db),
-) -> User | None:
-    """Allow legacy anonymous sessions while isolating authenticated resources."""
-    if credentials is None:
-        return None
-    if credentials.scheme.lower() != "bearer":
-        raise _auth_error()
-    return _decode_user(credentials, db)
-
-
 def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise ApiError(
@@ -103,5 +91,17 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
             status_code=403,
             recoverable=False,
             suggested_action="请联系管理员申请权限",
+        )
+    return user
+
+
+def require_teacher(user: User = Depends(get_current_user)) -> User:
+    if user.role != "teacher":
+        raise ApiError(
+            "只有教师可以访问此资源",
+            code="TEACHER_REQUIRED",
+            status_code=403,
+            recoverable=False,
+            suggested_action="请使用教师账号登录",
         )
     return user

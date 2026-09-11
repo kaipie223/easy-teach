@@ -108,6 +108,12 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  /** Apply the complete TeachingBrief snapshot carried by an SSE event. */
+  function applyBriefEvent(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object' || !snapshot.brief_id) return
+    brief.value = snapshot
+  }
+
   async function fetchBrief(id = projectId.value) {
     if (!id) {
       brief.value = null
@@ -174,6 +180,7 @@ export const useSessionStore = defineStore('session', () => {
     addMessage,
     appendToLastMessage,
     addStructuredMessage,
+    applyBriefEvent,
     clearMessages,
     createSession,
     fetchSession,

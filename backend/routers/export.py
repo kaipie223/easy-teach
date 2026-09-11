@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session as DBSession
 
 from backend.core.errors import ApiError
 from backend.core.ownership import get_file_for_user
-from backend.core.security import get_optional_current_user
+from backend.core.security import get_current_user
 from backend.db.database import get_db
 from backend.models.user import User
 
@@ -27,7 +27,7 @@ CONTENT_TYPES = {
 def download_file(
     file_id: str,
     db: DBSession = Depends(get_db),
-    user: User | None = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
 ):
     if not file_id.strip():
         raise ApiError("file_id 不能为空", code="missing_file_id", status_code=422)

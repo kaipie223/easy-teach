@@ -2,6 +2,7 @@ import axios from 'axios'
 
 export const ACCESS_TOKEN_KEY = 'easy_teach_access_token'
 export const USER_KEY = 'easy_teach_user'
+export const ACTIVE_PROJECT_KEY = 'active_project_id'
 
 export function getAccessToken() {
   return localStorage.getItem(ACCESS_TOKEN_KEY)
@@ -15,6 +16,7 @@ export function saveAuthSession(payload) {
 export function clearAuthSession() {
   localStorage.removeItem(ACCESS_TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
+  localStorage.removeItem(ACTIVE_PROJECT_KEY)
 }
 
 const api = axios.create({
@@ -43,6 +45,19 @@ api.interceptors.response.use(
 )
 
 export default api
+
+export async function getApiErrorMessage(error, fallback = '请求失败，请重试') {
+  const payload = error.response?.data
+  if (typeof Blob !== 'undefined' && payload instanceof Blob) {
+    try {
+      const parsed = JSON.parse(await payload.text())
+      return parsed?.error?.message || fallback
+    } catch {
+      return fallback
+    }
+  }
+  return payload?.error?.message || error.message || fallback
+}
 
 // ── 会话 ──────────────────────────────────────────
 
@@ -179,14 +194,29 @@ export function fetchCoursewarePlan(projectId) {
   return api.get(`/projects/${projectId}/plan`)
 }
 
-export function buildCoursewarePlan(projectId, forceRebuild = false) {
-  return api.post(`/projects/${projectId}/plan`, { force_rebuild: forceRebuild }, {
+export function buildCoursewarePlan(projectId, options = {}) {
+  return api.post(`/projects/${projectId}/plan`, {
+    force_rebuild: Boolean(options.forceRebuild),
+    generation_mode: options.generationMode || 'ai',
+    allow_template_fallback: Boolean(options.allowTemplateFallback),
+  }, {
     timeout: 10 * 60 * 1000,
   })
 }
 
+export function saveCoursewarePlanRevision(projectId, basePlanId, content, summary = '') {
+  return api.post(`/projects/${projectId}/plan/revisions`, {
+    base_plan_id: basePlanId,
+    content,
+    summary: summary || '教师编辑教学蓝图',
+  })
+}
+
 export function startProjectGeneration(projectId, planId = null) {
-  return api.post(`/projects/${projectId}/generate`, planId ? { plan_id: planId } : undefined)
+  return api.post(`/projects/${projectId}/generate`, {
+    ...(planId ? { plan_id: planId } : {}),
+    idempotency_key: `project-generation:${projectId}:${planId || 'latest'}`,
+  })
 }
 
 // ── 版本与局部修改 ──────────────────────────────────
@@ -213,11 +243,17 @@ export function applyRevision(projectId, patchId, confirmed = false) {
   })
 }
 
+export function regenerateArtifactTarget(projectId, payload) {
+  return api.post(`/projects/${projectId}/revisions/regenerate`, payload, {
+    timeout: 2 * 60 * 1000,
+  })
+}
+
 export function restoreArtifactVersion(projectId, versionId, summary = '') {
   return api.post(`/projects/${projectId}/versions/${versionId}/restore`, summary ? { summary } : undefined)
 }
 
-export function createVersionExports(projectId, artifactVersionId, formats = ['pptx', 'docx', 'html'], force = false) {
+export function createVersionExports(projectId, artifactVersionId, formats = ['pptx', 'docx', 'pdf', 'html'], force = false) {
   return api.post(`/projects/${projectId}/exports`, {
     artifact_version_id: artifactVersionId,
     formats,

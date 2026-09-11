@@ -133,15 +133,6 @@
       </div>
     </section>
 
-    <section class="section-card admin-next-step">
-      <div>
-        <h2>管理员下一步</h2>
-        <p>公共教学资料的导入、启停、索引和检索验证已经独立放在知识库管理页。</p>
-      </div>
-      <el-button type="primary" plain @click="$router.push('/knowledge')">
-        打开知识库管理
-      </el-button>
-    </section>
   </div>
 </template>
 
@@ -319,25 +310,6 @@ onMounted(loadUsers)
   white-space: nowrap;
 }
 
-.admin-next-step {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.admin-next-step h2 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 18px;
-}
-
-.admin-next-step p {
-  margin: 6px 0 0;
-  color: #64748b;
-  line-height: 1.6;
-}
-
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -370,8 +342,7 @@ onMounted(loadUsers)
     grid-template-columns: 1fr;
   }
 
-  .directory-header,
-  .admin-next-step {
+  .directory-header {
     align-items: flex-start;
     flex-direction: column;
   }

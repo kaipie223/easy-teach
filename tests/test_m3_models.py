@@ -48,6 +48,7 @@ def test_evidence_requires_exactly_one_source():
         )
         knowledge = KnowledgeDocument(
             document_id="kb_schema",
+            owner_id=user.user_id,
             collection_id="default",
             title="Knowledge",
             source_path="knowledge-base/lesson.pdf",

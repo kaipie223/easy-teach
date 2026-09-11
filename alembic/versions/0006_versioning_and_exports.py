@@ -10,6 +10,10 @@ branch_labels = None
 depends_on = None
 
 
+def _is_sqlite() -> bool:
+    return op.get_context().dialect.name == "sqlite"
+
+
 def upgrade() -> None:
     op.create_table(
         "artifact_versions",
@@ -110,45 +114,85 @@ def upgrade() -> None:
     op.add_column("tasks", sa.Column("task_type", sa.String(length=32), nullable=True))
     op.add_column("tasks", sa.Column("retry_count", sa.Integer(), nullable=True))
     op.add_column("tasks", sa.Column("max_retries", sa.Integer(), nullable=True))
-    op.create_index("ix_tasks_artifact_version_id", "tasks", ["artifact_version_id"])
-    op.create_foreign_key(
-        "fk_tasks_artifact_version_id",
-        "tasks",
-        "artifact_versions",
-        ["artifact_version_id"],
-        ["artifact_version_id"],
-        ondelete="SET NULL",
-    )
     op.execute("UPDATE tasks SET task_type = 'generation' WHERE task_type IS NULL")
     op.execute("UPDATE tasks SET retry_count = 0 WHERE retry_count IS NULL")
     op.execute("UPDATE tasks SET max_retries = 2 WHERE max_retries IS NULL")
-    op.alter_column("tasks", "task_type", nullable=False)
-    op.alter_column("tasks", "retry_count", nullable=False)
-    op.alter_column("tasks", "max_retries", nullable=False)
+    if _is_sqlite():
+        with op.batch_alter_table("tasks") as batch_op:
+            batch_op.create_foreign_key(
+                "fk_tasks_artifact_version_id",
+                "artifact_versions",
+                ["artifact_version_id"],
+                ["artifact_version_id"],
+                ondelete="SET NULL",
+            )
+            batch_op.alter_column(
+                "task_type",
+                existing_type=sa.String(length=32),
+                nullable=False,
+            )
+            batch_op.alter_column("retry_count", existing_type=sa.Integer(), nullable=False)
+            batch_op.alter_column("max_retries", existing_type=sa.Integer(), nullable=False)
+    else:
+        op.create_foreign_key(
+            "fk_tasks_artifact_version_id",
+            "tasks",
+            "artifact_versions",
+            ["artifact_version_id"],
+            ["artifact_version_id"],
+            ondelete="SET NULL",
+        )
+        op.alter_column("tasks", "task_type", nullable=False)
+        op.alter_column("tasks", "retry_count", nullable=False)
+        op.alter_column("tasks", "max_retries", nullable=False)
+    op.create_index("ix_tasks_artifact_version_id", "tasks", ["artifact_version_id"])
 
     op.add_column("files", sa.Column("artifact_version_id", sa.String(length=40), nullable=True))
+    if _is_sqlite():
+        with op.batch_alter_table("files") as batch_op:
+            batch_op.create_foreign_key(
+                "fk_files_artifact_version_id",
+                "artifact_versions",
+                ["artifact_version_id"],
+                ["artifact_version_id"],
+                ondelete="SET NULL",
+            )
+    else:
+        op.create_foreign_key(
+            "fk_files_artifact_version_id",
+            "files",
+            "artifact_versions",
+            ["artifact_version_id"],
+            ["artifact_version_id"],
+            ondelete="SET NULL",
+        )
     op.create_index("ix_files_artifact_version_id", "files", ["artifact_version_id"])
-    op.create_foreign_key(
-        "fk_files_artifact_version_id",
-        "files",
-        "artifact_versions",
-        ["artifact_version_id"],
-        ["artifact_version_id"],
-        ondelete="SET NULL",
-    )
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_files_artifact_version_id", "files", type_="foreignkey")
     op.drop_index("ix_files_artifact_version_id", table_name="files")
-    op.drop_column("files", "artifact_version_id")
+    if _is_sqlite():
+        with op.batch_alter_table("files") as batch_op:
+            batch_op.drop_constraint("fk_files_artifact_version_id", type_="foreignkey")
+            batch_op.drop_column("artifact_version_id")
+    else:
+        op.drop_constraint("fk_files_artifact_version_id", "files", type_="foreignkey")
+        op.drop_column("files", "artifact_version_id")
 
-    op.drop_constraint("fk_tasks_artifact_version_id", "tasks", type_="foreignkey")
     op.drop_index("ix_tasks_artifact_version_id", table_name="tasks")
-    op.drop_column("tasks", "max_retries")
-    op.drop_column("tasks", "retry_count")
-    op.drop_column("tasks", "task_type")
-    op.drop_column("tasks", "artifact_version_id")
+    if _is_sqlite():
+        with op.batch_alter_table("tasks") as batch_op:
+            batch_op.drop_constraint("fk_tasks_artifact_version_id", type_="foreignkey")
+            batch_op.drop_column("max_retries")
+            batch_op.drop_column("retry_count")
+            batch_op.drop_column("task_type")
+            batch_op.drop_column("artifact_version_id")
+    else:
+        op.drop_constraint("fk_tasks_artifact_version_id", "tasks", type_="foreignkey")
+        op.drop_column("tasks", "max_retries")
+        op.drop_column("tasks", "retry_count")
+        op.drop_column("tasks", "task_type")
+        op.drop_column("tasks", "artifact_version_id")
 
     op.drop_index("ix_exports_version_format", table_name="exports")
     op.drop_index("ix_exports_status", table_name="exports")

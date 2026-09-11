@@ -9,12 +9,14 @@ from .session import gen_id
 
 
 class KnowledgeDocument(Base):
-    """A managed document in the shared knowledge-base collection."""
+    """A managed document in one teacher's private knowledge base."""
 
     __tablename__ = "knowledge_documents"
 
     document_id = Column(String(40), primary_key=True, default=lambda: gen_id("kb"))
-    owner_id = Column(String(40), ForeignKey("users.user_id", ondelete="SET NULL"), index=True)
+    owner_id = Column(
+        String(40), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True
+    )
     collection_id = Column(String(128), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     source_path = Column(String(1024), nullable=False)
@@ -38,6 +40,10 @@ class KnowledgeDocument(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "collection_id", "checksum_sha256", "version", name="uq_knowledge_document_version"
+            "owner_id",
+            "collection_id",
+            "checksum_sha256",
+            "version",
+            name="uq_knowledge_owner_collection_checksum_version",
         ),
     )

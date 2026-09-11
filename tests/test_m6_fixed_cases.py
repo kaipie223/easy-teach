@@ -152,7 +152,7 @@ class LocalCaseCollection:
         }
 
 
-def local_case_retriever() -> RAGRetriever:
+def local_case_retriever(_owner_id: str) -> RAGRetriever:
     retriever = RAGRetriever.__new__(RAGRetriever)
     retriever.vector_weight = 0.7
     retriever.kw_weight = 0.3
@@ -163,7 +163,9 @@ def local_case_retriever() -> RAGRetriever:
 
 def build_case_plan(case: dict, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(rag_service, "_get_retriever", local_case_retriever)
-    documents = asyncio.run(rag_service.search(case["query"], top_k=2))
+    documents = asyncio.run(
+        rag_service.search(case["query"], top_k=2, owner_id="u_fixed_case")
+    )
     assert documents
     assert documents[0].source == case["source"]
     assert documents[0].locator["page"] in {1, 3}

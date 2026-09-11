@@ -2,20 +2,40 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY --from=ghcr.io/astral-sh/uv:0.4.20 /uv /uvx /bin/
+ENV PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple \
+    UV_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple \
+    UV_HTTP_TIMEOUT=600 \
+    UV_CONCURRENT_DOWNLOADS=2 \
+    UV_LINK_MODE=copy
+
+RUN sed -i \
+    -e 's|http://deb.debian.org/debian|http://mirrors.cloud.tencent.com/debian|g' \
+    -e 's|http://security.debian.org/debian-security|http://mirrors.cloud.tencent.com/debian-security|g' \
+    /etc/apt/sources.list.d/debian.sources
+
+RUN apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --no-cache-dir "uv==0.12.5"
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv export --frozen --no-dev --format requirements-txt --no-hashes \
+    | awk '!/^(av|ctranslate2|faster-whisper|torch|triton)==/ && !/^(cuda|nvidia)-/' \
+    > requirements.production.txt \
+    && uv venv \
+    && uv pip install -r requirements.production.txt
 
 COPY backend ./backend
 COPY ai ./ai
 COPY gen ./gen
+COPY video_parser ./video_parser
 COPY alembic ./alembic
 COPY alembic.ini ./alembic.ini
-COPY knowledge-base ./knowledge-base
 
-RUN mkdir -p /app/data/uploads /app/data/generated /app/data/chroma
+RUN mkdir -p /app/data/uploads /app/data/generated /app/data/chroma /app/data/video-parser
 
 ENV PYTHONUNBUFFERED=1
+ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
 
-CMD ["uv", "run", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

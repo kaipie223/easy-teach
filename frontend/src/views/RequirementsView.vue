@@ -1,119 +1,86 @@
 <template>
-  <div class="page-stack">
+  <div class="page-stack requirements-entry">
     <header class="page-header">
       <div>
         <h1>需求共创</h1>
-        <p>通过多轮对话确认课程主题、授课对象、教学目标和输出类型。</p>
+        <p>正在进入当前项目的 AI 共创会话。</p>
       </div>
     </header>
 
-    <section class="two-column">
-      <article class="section-card chat-panel">
-        <div class="section-header">
-          <div>
-            <h2>AI 共创助手</h2>
-            <p>引导教师补齐生成教学成果所需的关键信息。</p>
+    <section class="section-card entry-state">
+      <el-skeleton v-if="loading" :rows="4" animated />
+      <el-alert
+        v-else-if="errorMessage"
+        :title="errorMessage"
+        type="error"
+        show-icon
+        :closable="false"
+      >
+        <template #default>
+          <div class="state-actions">
+            <el-button size="small" type="primary" @click="openActiveProject">重试</el-button>
+            <el-button size="small" @click="router.push('/')">返回工作台</el-button>
           </div>
-        </div>
-
-        <div class="chat-list">
-          <div
-            v-for="message in chatMessages"
-            :key="message.id"
-            :class="['message-row', message.role === 'assistant' ? 'assistant' : 'teacher']"
-          >
-            <div class="message-meta">
-              <strong>{{ message.sender }}</strong>
-              <span>{{ message.time }}</span>
-            </div>
-            <div class="message-bubble">{{ message.content }}</div>
-          </div>
-        </div>
-
-        <div class="chat-input-bar">
-          <el-input placeholder="输入教学想法或回答 AI 的问题" />
-          <el-button>
-            <el-icon><Microphone /></el-icon>
-          </el-button>
-          <el-button type="primary" @click="go('/blueprint')">
-            <el-icon><Promotion /></el-icon>
-          </el-button>
-        </div>
-      </article>
-
-      <article class="section-card requirement-panel">
-        <div class="section-header">
-          <div>
-            <h2>教学需求确认单</h2>
-            <p>右侧表单用于承接 AI 推断结果和教师确认内容。</p>
-          </div>
-        </div>
-
-        <div class="field-list">
-          <div class="field-row">
-            <label>课程主题</label>
-            <el-input :model-value="requirementForm.topic" />
-            <el-button disabled>教师输入</el-button>
-          </div>
-          <div class="field-row">
-            <label>授课对象</label>
-            <el-input :model-value="requirementForm.audience" />
-            <el-button disabled>教师输入</el-button>
-          </div>
-          <div class="field-row">
-            <label>课时</label>
-            <el-input :model-value="requirementForm.duration" />
-            <el-button disabled>教师输入</el-button>
-          </div>
-          <div class="field-row">
-            <label>教学目标</label>
-            <el-input :model-value="requirementForm.objectives" type="textarea" :rows="3" />
-            <el-button disabled>AI推断</el-button>
-          </div>
-          <div class="field-row">
-            <label>核心知识点</label>
-            <el-input :model-value="requirementForm.coreKnowledge" type="textarea" :rows="2" />
-            <el-button disabled>AI推断</el-button>
-          </div>
-          <div class="field-row">
-            <label>重点难点</label>
-            <el-input :model-value="requirementForm.focusAndDifficulties" type="textarea" :rows="2" />
-            <el-button disabled>AI推断</el-button>
-          </div>
-          <div class="field-row">
-            <label>输出类型</label>
-            <el-select :model-value="requirementForm.outputType">
-              <el-option
-                v-for="option in outputTypeOptions"
-                :key="option"
-                :label="option"
-                :value="option"
-              />
-            </el-select>
-            <el-button disabled>AI推断</el-button>
-          </div>
-        </div>
-
-        <el-button type="primary" class="confirm-button" @click="go('/blueprint')">确认并生成蓝图</el-button>
-      </article>
+        </template>
+      </el-alert>
+      <el-empty v-else description="请先从工作台选择一个项目">
+        <el-button type="primary" @click="router.push('/')">返回工作台</el-button>
+      </el-empty>
     </section>
   </div>
 </template>
 
 <script setup>
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { chatMessages, outputTypeOptions, requirementForm } from '../mocks'
+import { useProjectStore } from '@/stores/project'
+import { useSessionStore } from '@/stores/session'
 
 const router = useRouter()
+const projectStore = useProjectStore()
+const sessionStore = useSessionStore()
+const loading = ref(false)
+const errorMessage = ref('')
 
-function go(path) {
-  router.push(path)
+async function openActiveProject() {
+  if (loading.value) return
+  loading.value = true
+  errorMessage.value = ''
+  try {
+    const project = await projectStore.ensureActiveProject()
+    if (!project) return
+    let sessionId = project.session_id
+    if (!sessionId) {
+      const session = await sessionStore.createSession(project.title, project.project_id)
+      sessionId = session.session_id
+      projectStore.setActiveSession(sessionId)
+    }
+    await router.replace(`/chat/${sessionId}`)
+  } catch (error) {
+    errorMessage.value = error.response?.data?.error?.message || '项目会话加载失败，请重试'
+  } finally {
+    loading.value = false
+  }
 }
+
+onMounted(openActiveProject)
 </script>
 
 <style scoped>
-.confirm-button {
-  width: 100%;
-  margin-top: 20px;
+.requirements-entry {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.entry-state {
+  min-height: 260px;
+  display: grid;
+  align-items: center;
+}
+
+.state-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
 }
 </style>

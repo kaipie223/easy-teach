@@ -1,10 +1,14 @@
 import asyncio
+import zipfile
 from pathlib import Path
+
+import fitz
+from docx import Document
 
 from backend.db.database import get_db
 from backend.main import app
 from backend.models.material import EvidenceChunk, Material
-from backend.services.generator import generate_docx, generate_html, generate_pptx
+from backend.services.generator import generate_docx, generate_html, generate_pdf, generate_pptx
 
 
 def register(client, email: str):
@@ -118,11 +122,12 @@ def test_courseware_plan_is_versioned_and_evidence_backed(client, monkeypatch):
     created = client.post(
         f"/api/v1/projects/{project_id}/plan",
         headers=headers,
-        json={},
+        json={"generation_mode": "template"},
     )
     assert created.status_code == 201, created.text
     plan = created.json()
     assert plan["status"] == "ready"
+    assert plan["generation_mode"] == "template"
     assert plan["version"] == 1
     assert len(plan["content"]["slides"]) >= 4
     assert plan["content"]["slides"][0]["slide_id"] == "slide_001"
@@ -138,14 +143,41 @@ def test_courseware_plan_is_versioned_and_evidence_backed(client, monkeypatch):
     rebuilt = client.post(
         f"/api/v1/projects/{project_id}/plan",
         headers=headers,
-        json={"force_rebuild": True},
+        json={"force_rebuild": True, "generation_mode": "template"},
     )
     assert rebuilt.status_code == 201, rebuilt.text
     assert rebuilt.json()["version"] == 2
     assert rebuilt.json()["brief_id"] == plan["brief_id"]
 
+    revised_content = rebuilt.json()["content"]
+    revised_content["title"] = "TCP 连接建立与确认机制"
+    revised_content["slides"][0]["title"] = "从一次连接请求开始"
+    revised_content["output_specs"]["docx"]["homework"] = "绘制报文时序图并解释三个报文。"
+    revised = client.post(
+        f"/api/v1/projects/{project_id}/plan/revisions",
+        headers=headers,
+        json={
+            "base_plan_id": rebuilt.json()["plan_id"],
+            "content": revised_content,
+            "summary": "调整导入页与课后任务",
+        },
+    )
+    assert revised.status_code == 201, revised.text
+    assert revised.json()["version"] == 3
+    assert revised.json()["generation_mode"] == "manual"
+    assert revised.json()["content"]["slides"][0]["slide_id"] == "slide_001"
+    assert revised.json()["content"]["output_specs"]["docx"]["homework"].startswith("绘制")
 
-def test_three_renderers_consume_the_same_plan(tmp_path, monkeypatch):
+    stale_revision = client.post(
+        f"/api/v1/projects/{project_id}/plan/revisions",
+        headers=headers,
+        json={"base_plan_id": rebuilt.json()["plan_id"], "content": revised_content},
+    )
+    assert stale_revision.status_code == 409
+    assert stale_revision.json()["error"]["code"] == "PLAN_VERSION_CONFLICT"
+
+
+def test_four_renderers_consume_the_same_plan(tmp_path, monkeypatch):
     from backend.config import settings
 
     monkeypatch.setattr(settings, "output_dir", Path(tmp_path))
@@ -163,7 +195,7 @@ def test_three_renderers_consume_the_same_plan(tmp_path, monkeypatch):
                 "title": "TCP 三次握手",
                 "purpose": "导入",
                 "bullets": ["SYN", "SYN-ACK", "ACK"],
-                "speaker_notes": "引入问题",
+                "speaker_notes": "引入问题并观察学生已有认识",
                 "evidence_refs": [{"source_name": "tcp.pdf", "locator": {"page": 3}}],
             }
         ],
@@ -186,16 +218,61 @@ def test_three_renderers_consume_the_same_plan(tmp_path, monkeypatch):
                 "interaction_type": "classification",
                 "title": "报文排序",
                 "prompt": "请选出报文",
-                "items": ["SYN", "ACK"],
+                "items": ["SYN", "ACK", "</script><script>alert(1)</script>"],
                 "answer_groups": {"核心": ["SYN", "ACK"]},
                 "evidence_refs": [],
             }
         ],
         "evidence_refs": [],
+        "output_specs": {
+            "pptx": {
+                "narrative_arc": ["问题", "解释", "练习"],
+                "visual_direction": "使用时序图呈现报文方向",
+                "max_bullets_per_slide": 5,
+                "speaker_notes_required": True,
+            },
+            "docx": {
+                "teacher_preparation": ["准备抓包截图"],
+                "differentiation": ["为初学者提供报文提示"],
+                "homework": "绘制三次握手时序图。",
+                "reflection_prompts": ["学生最容易混淆哪个确认号？"],
+            },
+            "pdf": {
+                "printable_summary": "三次握手通过 SYN、SYN-ACK 和 ACK 建立连接。",
+                "assessment_checklist": ["能按顺序写出三个报文"],
+                "include_sources": True,
+            },
+            "html": {
+                "interaction_ids": ["interaction_001"],
+                "completion_message": "你已经完成连接建立练习。",
+                "allow_retry": False,
+                "accessibility_notes": ["支持键盘操作"],
+            },
+        },
     }
     pptx_path = Path(asyncio.run(generate_pptx(plan)))
     docx_path = Path(asyncio.run(generate_docx(plan)))
+    pdf_path = Path(asyncio.run(generate_pdf(plan)))
     html_path = Path(asyncio.run(generate_html(plan)))
     assert pptx_path.is_file() and pptx_path.stat().st_size > 0
     assert docx_path.is_file() and docx_path.stat().st_size > 0
-    assert html_path.is_file() and "报文排序" in html_path.read_text(encoding="utf-8")
+    assert pdf_path.read_bytes().startswith(b"%PDF-")
+    with fitz.open(pdf_path) as pdf:
+        assert pdf.page_count == 3
+        pdf_text = "".join(page.get_text() for page in pdf)
+        assert "学习评价清单" in pdf_text
+        assert "三次握手通过" in pdf_text
+    document_text = "\n".join(paragraph.text for paragraph in Document(docx_path).paragraphs)
+    assert "准备抓包截图" in document_text
+    assert "绘制三次握手时序图" in document_text
+    with zipfile.ZipFile(pptx_path) as archive:
+        notes_xml = b"".join(
+            archive.read(name) for name in archive.namelist() if name.startswith("ppt/notesSlides/")
+        )
+        assert "引入问题并观察学生已有认识".encode() in notes_xml
+    html_text = html_path.read_text(encoding="utf-8")
+    assert "报文排序" in html_text
+    assert "提交答案" in html_text and "重新作答" not in html_text
+    assert "你已经完成连接建立练习" in html_text
+    assert "answerGroups" in html_text
+    assert "</script><script>alert(1)</script>" not in html_text

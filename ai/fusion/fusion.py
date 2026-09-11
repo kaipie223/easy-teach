@@ -9,6 +9,7 @@ from backend.schemas import IntentResult, RAGDocument
 
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
+MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 
 def _extract_json(text: str) -> dict:
@@ -77,10 +78,11 @@ class KnowledgeFuser:
 
         try:
             resp = self.client.chat.completions.create(
-                model="deepseek-chat",
+                model=MODEL_NAME,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=2000,
                 response_format={"type": "json_object"},
+                extra_body={"thinking": {"type": "disabled"}},
                 timeout=30,
             )
             result = _extract_json(resp.choices[0].message.content)

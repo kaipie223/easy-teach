@@ -12,6 +12,7 @@ from backend.models.session import Session
 from backend.models.user import User
 from backend.schemas import ChatRequest
 from backend.services.chat import create_chat_stream
+from backend.services.limits import consume_model_quota
 
 router = APIRouter()
 
@@ -37,6 +38,7 @@ async def project_chat(
         raise ApiError("消息不能为空", code="empty_message", status_code=422)
 
     project = get_project_for_user(db, project_id, user)
+    consume_model_quota(user.user_id)
     session = _latest_session(db, project)
     if session is None:
         from datetime import datetime, timezone

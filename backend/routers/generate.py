@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session as DBSession
 
 from backend.core.errors import ApiError
-from backend.core.ownership import get_session_for_user, get_task_for_user
-from backend.core.security import get_optional_current_user
+from backend.core.ownership import get_project_for_user, get_session_for_user, get_task_for_user
+from backend.core.security import get_current_user
+from backend.config import settings
 from backend.db.database import get_db
 from backend.models.courseware import CoursewarePlan
 from backend.models.project import Project
@@ -17,7 +18,15 @@ from backend.schemas import FeedbackRequest, FeedbackResponse, GenerateRequest, 
 from backend.services.brief import get_latest_brief
 from backend.services.orchestrator import get_orchestrator
 from backend.services.task_queue import enqueue_generation, task_info_values
-from backend.services.versions import ensure_initial_version
+from backend.services.versions import (
+    apply_operations,
+    create_patch,
+    ensure_initial_version,
+    get_latest_version,
+    get_version,
+    interpret_instruction,
+    snapshot_spec,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,7 +36,7 @@ router = APIRouter()
 async def start_generation(
     req: GenerateRequest,
     db: DBSession = Depends(get_db),
-    user: User | None = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
 ):
     if not req.session_id.strip():
         raise ApiError("session_id 不能为空", code="missing_session_id", status_code=422)
@@ -78,7 +87,10 @@ async def start_generation(
 
     # Celery worker 使用独立数据库会话，不传递请求级 db 实例。
     enqueue_generation(task_info.task_id, db=db)
-
+    if settings.task_queue_eager:
+        db.expire_all()
+        refreshed = get_task_for_user(db, task_info.task_id, user)
+        return TaskInfo(**task_info_values(refreshed))
     return task_info
 
 
@@ -86,7 +98,7 @@ async def start_generation(
 def get_task_status(
     task_id: str,
     db: DBSession = Depends(get_db),
-    user: User | None = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
 ):
     if not task_id.strip():
         raise ApiError("task_id 不能为空", code="missing_task_id", status_code=422)
@@ -96,13 +108,59 @@ def get_task_status(
     return TaskInfo(**task_info_values(t))
 
 
-@router.post("/feedback", response_model=FeedbackResponse)
+@router.post("/generate/feedback", response_model=FeedbackResponse, status_code=201)
+@router.post("/feedback", response_model=FeedbackResponse, status_code=201, include_in_schema=False)
 def submit_feedback(
     req: FeedbackRequest,
     db: DBSession = Depends(get_db),
-    user: User | None = Depends(get_optional_current_user),
+    user: User = Depends(get_current_user),
 ):
     if not req.feedback.strip():
         raise ApiError("反馈内容不能为空", code="empty_feedback", status_code=422)
-    get_task_for_user(db, req.task_id, user)
-    return FeedbackResponse(task_id=req.task_id, status="feedback_received")
+    task = get_task_for_user(db, req.task_id, user)
+    if not task.project_id:
+        raise ApiError(
+            "该生成任务未绑定项目，无法创建成果修订",
+            code="FEEDBACK_PROJECT_REQUIRED",
+            status_code=409,
+        )
+    project = get_project_for_user(db, task.project_id, user)
+    base = (
+        get_version(db, project.project_id, task.artifact_version_id)
+        if task.artifact_version_id
+        else get_latest_version(db, project.project_id)
+    )
+    if base is None:
+        raise ApiError(
+            "该任务没有可修改的成果版本",
+            code="FEEDBACK_VERSION_REQUIRED",
+            status_code=409,
+            suggested_action="先完成教学成果生成，再提交修改意见",
+        )
+
+    scope, target_ids, operations, cascade_check, requires_confirmation, summary = (
+        interpret_instruction(snapshot_spec(base), req.feedback)
+    )
+    apply_operations(snapshot_spec(base), operations)
+    patch = create_patch(
+        db,
+        user_id=user.user_id,
+        project_id=project.project_id,
+        base_version_id=base.artifact_version_id,
+        instruction=req.feedback,
+        scope=scope,
+        target_ids=target_ids,
+        operations=operations,
+        cascade_check=cascade_check,
+        requires_confirmation=requires_confirmation,
+        summary=summary,
+    )
+    db.commit()
+    db.refresh(patch)
+    return FeedbackResponse(
+        task_id=task.task_id,
+        project_id=project.project_id,
+        patch_id=patch.patch_id,
+        status="revision_preview_created",
+        requires_confirmation=patch.requires_confirmation,
+    )

@@ -1,7 +1,9 @@
 """TeachingBrief merge, validation and versioning services."""
 
 from copy import deepcopy
+from contextlib import nullcontext
 from datetime import datetime, timezone
+from hashlib import sha256
 from typing import Any
 
 from sqlalchemy import func
@@ -18,8 +20,7 @@ from backend.schemas import (
     TeachingBriefInfo,
     TeachingBriefUpdate,
 )
-
-DEFAULT_OUTPUT_TYPES = ["pptx", "docx", "html"]
+from backend.services.version_allocator import project_version_lock
 
 FIELD_LABELS = {
     "teaching_goal": "教学目标",
@@ -42,7 +43,7 @@ def empty_content() -> dict[str, Any]:
         "logic_flow": [],
         "teaching_focus": "",
         "teaching_difficulties": "",
-        "output_types": list(DEFAULT_OUTPUT_TYPES),
+        "output_types": [],
         "interaction_ideas": "",
         "style_preference": "",
         "existing_knowledge": "",
@@ -67,11 +68,16 @@ def normalize_content(raw: dict[str, Any] | None) -> dict[str, Any]:
     except (TypeError, ValueError):
         content["duration_minutes"] = 45
 
-    content["knowledge_points"] = [
-        KnowledgePoint.model_validate(item).model_dump()
-        for item in (content.get("knowledge_points") or [])
-        if isinstance(item, dict)
-    ]
+    normalized_points = []
+    for index, item in enumerate(content.get("knowledge_points") or []):
+        if not isinstance(item, dict):
+            continue
+        point = KnowledgePoint.model_validate(item)
+        if not point.point_id:
+            identity = f"{index}:{point.order}:{point.title}".encode("utf-8")
+            point.point_id = f"kp_{sha256(identity).hexdigest()[:16]}"
+        normalized_points.append(point.model_dump())
+    content["knowledge_points"] = normalized_points
     content["logic_flow"] = _clean_string_list(content.get("logic_flow"))
     content["output_types"] = _clean_string_list(content.get("output_types"))
     for field in (
@@ -102,7 +108,17 @@ def intent_to_content(result: IntentResult) -> dict[str, Any]:
             "duration_minutes": result.duration_minutes,
             "knowledge_points": [item.model_dump() for item in result.knowledge_points],
             "logic_flow": result.logic_flow,
+            "teaching_focus": result.teaching_focus,
+            "teaching_difficulties": result.teaching_difficulties,
+            "output_types": result.output_types,
+            "interaction_ideas": result.interaction_ideas,
             "style_preference": result.style_preference,
+            "existing_knowledge": result.existing_knowledge,
+            "case_preference": result.case_preference,
+            "homework_type": result.homework_type,
+            "forbidden_content": result.forbidden_content,
+            "scenario_extensions": result.scenario_extensions,
+            "extra_requirements": result.extra_requirements,
             "missing_info": result.missing_info,
             "follow_up_question": result.follow_up_question,
             "confirm_summary": result.confirm_summary,
@@ -191,21 +207,23 @@ def _new_draft(
     session_id: str | None,
     seed: dict[str, Any] | None = None,
 ) -> TeachingBrief:
-    now = datetime.now(timezone.utc)
-    brief = TeachingBrief(
-        user_id=user_id,
-        project_id=project_id,
-        session_id=session_id,
-        version=_next_version(db, project_id, session_id),
-        status="draft",
-        content_json=normalize_content(seed),
-        source_refs={},
-        confidence={},
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(brief)
-    db.flush()
+    lock = project_version_lock(db, project_id) if project_id else nullcontext()
+    with lock:
+        now = datetime.now(timezone.utc)
+        brief = TeachingBrief(
+            user_id=user_id,
+            project_id=project_id,
+            session_id=session_id,
+            version=_next_version(db, project_id, session_id),
+            status="draft",
+            content_json=normalize_content(seed),
+            source_refs={},
+            confidence={},
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(brief)
+        db.flush()
     return brief
 
 
@@ -236,23 +254,38 @@ def persist_intent_result(
 
     current = normalize_content(draft.content_json)
     incoming = intent_to_content(result)
-    for field in (
+    ai_fields = (
         "teaching_goal",
         "target_audience",
         "duration_minutes",
         "knowledge_points",
         "logic_flow",
+        "teaching_focus",
+        "teaching_difficulties",
+        "output_types",
+        "interaction_ideas",
         "style_preference",
+        "existing_knowledge",
+        "case_preference",
+        "homework_type",
+        "forbidden_content",
+        "scenario_extensions",
+        "extra_requirements",
         "missing_info",
         "follow_up_question",
         "confirm_summary",
-    ):
+    )
+    source_refs = dict(draft.source_refs or {})
+    for field in ai_fields:
+        if source_refs.get(field) == "teacher":
+            continue
         value = incoming.get(field)
         if value or field in {"duration_minutes", "missing_info"}:
             current[field] = value
+            source_refs[field] = "ai"
     current = normalize_content(current)
     draft.content_json = current
-    draft.source_refs = {**(draft.source_refs or {}), "conversation": "ai"}
+    draft.source_refs = {**source_refs, "conversation": "ai"}
     draft.confidence = {
         **(draft.confidence or {}),
         "teaching_goal": 0.7 if current.get("teaching_goal") else 0.0,
@@ -365,7 +398,6 @@ def confirm_draft(
     latest.status = "confirmed"
     latest.confirmed_at = now
     latest.updated_at = now
-    project.current_version_id = latest.brief_id
     if latest.session_id:
         session = db.query(Session).filter(Session.session_id == latest.session_id).first()
         if session:
@@ -384,7 +416,17 @@ def brief_to_intent(brief: TeachingBrief) -> IntentResult:
         duration_minutes=content.get("duration_minutes", 45),
         knowledge_points=[KnowledgePoint.model_validate(item) for item in content.get("knowledge_points", [])],
         logic_flow=content.get("logic_flow", []),
+        teaching_focus=content.get("teaching_focus", ""),
+        teaching_difficulties=content.get("teaching_difficulties", ""),
+        output_types=content.get("output_types", []),
+        interaction_ideas=content.get("interaction_ideas", ""),
         style_preference=content.get("style_preference", ""),
+        existing_knowledge=content.get("existing_knowledge", ""),
+        case_preference=content.get("case_preference", ""),
+        homework_type=content.get("homework_type", ""),
+        forbidden_content=content.get("forbidden_content", ""),
+        scenario_extensions=content.get("scenario_extensions", ""),
+        extra_requirements=content.get("extra_requirements", ""),
         missing_info=missing_fields(content),
         follow_up_question=content.get("follow_up_question"),
         confirm_summary=content.get("confirm_summary"),

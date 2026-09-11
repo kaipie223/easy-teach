@@ -7,8 +7,14 @@ from backend.db.database import Base
 
 
 def gen_id(prefix: str) -> str:
-    """生成带前缀的唯一 ID，格式：{prefix}_{8位十六进制}"""
-    return f"{prefix}_{uuid.uuid4().hex[:8]}"
+    """Generate a compact, opaque ID with 96 bits of randomness.
+
+    Older records used only eight hexadecimal characters (32 bits), which is
+    too collision-prone for a public service.  Twenty-four characters still
+    fit every existing ``String(40)`` identifier column, including the longest
+    ``evidence_`` prefix, without requiring a destructive migration.
+    """
+    return f"{prefix}_{uuid.uuid4().hex[:24]}"
 
 
 class Session(Base):

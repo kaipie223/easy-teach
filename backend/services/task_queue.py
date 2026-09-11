@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session as DBSession
 
 from backend.config import settings
 from backend.core.errors import ApiError
 from backend.db.database import SessionLocal
+from backend.models.material import Material, MaterialAnalysis
 from backend.models.task import Task
 from backend.models.versioning import ExportRecord
 
@@ -176,9 +177,14 @@ def _dispatch(task_name: str, entity_id: str):
 
     try:
         if settings.task_queue_eager:
-            from backend.tasks import generate_courseware_task, render_export_task
+            from backend.tasks import generate_courseware_task, parse_material_task, render_export_task
 
-            task = generate_courseware_task if task_name == "easy_teach.generate" else render_export_task
+            task_by_name = {
+                "easy_teach.generate": generate_courseware_task,
+                "easy_teach.export": render_export_task,
+                "easy_teach.parse_material": parse_material_task,
+            }
+            task = task_by_name[task_name]
             return task.apply_async(args=[entity_id], task_id=entity_id)
         return celery_app.send_task(
             task_name,
@@ -228,6 +234,46 @@ def enqueue_generation(task_id: str, *, force: bool = False, db: DBSession | Non
             db.close()
 
 
+def enqueue_material_analysis(
+    analysis_id: str,
+    *,
+    force: bool = False,
+    db: DBSession | None = None,
+) -> str:
+    owns_db = db is None
+    db = db or SessionLocal()
+    try:
+        analysis = db.query(MaterialAnalysis).filter(MaterialAnalysis.analysis_id == analysis_id).first()
+        if analysis is None:
+            raise ApiError("资料解析记录不存在", code="MATERIAL_ANALYSIS_NOT_FOUND", status_code=404)
+        material = db.query(Material).filter(Material.material_id == analysis.material_id).first()
+        if material is None:
+            raise ApiError("资料不存在", code="MATERIAL_NOT_FOUND", status_code=404)
+        if analysis.status == "completed" or material.status == "ready":
+            return analysis.analysis_id
+        if not force and material.status in {"queued", "processing"}:
+            return analysis_id
+        material.status = "queued"
+        analysis.status = "pending"
+        material.updated_at = utcnow()
+        analysis.updated_at = material.updated_at
+        db.commit()
+        result = _dispatch("easy_teach.parse_material", analysis_id)
+        return result.id
+    except ApiError:
+        raise
+    except Exception as exc:
+        raise ApiError(
+            "资料解析任务入队失败",
+            code="TASK_QUEUE_UNAVAILABLE",
+            status_code=503,
+            details=str(exc),
+        ) from exc
+    finally:
+        if owns_db:
+            db.close()
+
+
 def enqueue_export(export_id: str, *, force: bool = False, db: DBSession | None = None) -> str:
     owns_db = db is None
     db = db or SessionLocal()
@@ -265,6 +311,7 @@ def recover_stale_jobs() -> dict[str, int]:
     cutoff = utcnow() - timedelta(seconds=settings.task_stale_after_seconds)
     generation_ids: list[str] = []
     export_ids: list[str] = []
+    material_analysis_ids: list[str] = []
     recovered = 0
     failed = 0
     db = SessionLocal()
@@ -272,8 +319,8 @@ def recover_stale_jobs() -> dict[str, int]:
         tasks = (
             db.query(Task)
             .filter(
-                Task.status == "processing",
-                or_(Task.heartbeat_at < cutoff, Task.heartbeat_at.is_(None)),
+                Task.status.in_(("pending", "processing")),
+                func.coalesce(Task.heartbeat_at, Task.updated_at, Task.created_at) < cutoff,
             )
             .with_for_update()
             .all()
@@ -298,8 +345,8 @@ def recover_stale_jobs() -> dict[str, int]:
         exports = (
             db.query(ExportRecord)
             .filter(
-                ExportRecord.status == "processing",
-                or_(ExportRecord.updated_at < cutoff, ExportRecord.updated_at.is_(None)),
+                ExportRecord.status.in_(("pending", "processing")),
+                func.coalesce(ExportRecord.updated_at, ExportRecord.created_at) < cutoff,
             )
             .with_for_update()
             .all()
@@ -316,6 +363,33 @@ def recover_stale_jobs() -> dict[str, int]:
                 record.status = "failed"
                 record.error = "导出工作进程失联，已超过最大恢复次数"
                 failed += 1
+
+        analyses = (
+            db.query(MaterialAnalysis)
+            .join(Material, Material.material_id == MaterialAnalysis.material_id)
+            .filter(
+                MaterialAnalysis.parser_name == "video-parser-model",
+                MaterialAnalysis.status.in_(("pending", "processing")),
+                Material.deleted_at.is_(None),
+                or_(MaterialAnalysis.updated_at < cutoff, MaterialAnalysis.updated_at.is_(None)),
+            )
+            .with_for_update()
+            .all()
+        )
+        for analysis in analyses:
+            material = db.query(Material).filter(Material.material_id == analysis.material_id).first()
+            if material is None:
+                continue
+            analysis.status = "pending"
+            analysis.error_code = "MATERIAL_PARSE_RECOVERED"
+            analysis.error_message = "视频解析工作进程失联，已自动恢复"
+            analysis.updated_at = utcnow()
+            material.status = "queued"
+            material.error_code = "MATERIAL_PARSE_RECOVERED"
+            material.error_message = analysis.error_message
+            material.updated_at = analysis.updated_at
+            material_analysis_ids.append(analysis.analysis_id)
+            recovered += 1
         db.commit()
     finally:
         db.close()
@@ -324,4 +398,6 @@ def recover_stale_jobs() -> dict[str, int]:
         enqueue_generation(task_id, force=True)
     for export_id in export_ids:
         enqueue_export(export_id, force=True)
+    for analysis_id in material_analysis_ids:
+        enqueue_material_analysis(analysis_id, force=True)
     return {"recovered": recovered, "failed": failed}

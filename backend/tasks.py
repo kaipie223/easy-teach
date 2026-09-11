@@ -7,6 +7,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from backend.celery_app import celery_app
 from backend.config import settings
 from backend.services.exports import run_export
+from backend.services.materials import prepare_material_retry, run_material_analysis
 from backend.services.orchestrator import get_orchestrator
 from backend.services.task_queue import (
     prepare_export_retry,
@@ -59,6 +60,29 @@ def render_export_task(self, export_id: str):
             raise self.retry(exc=exc, countdown=_retry_delay(self.request.retries))
         raise
     return export_id
+
+
+@celery_app.task(
+    bind=True,
+    name="easy_teach.parse_material",
+    max_retries=10,
+    acks_late=True,
+    reject_on_worker_lost=True,
+)
+def parse_material_task(self, analysis_id: str):
+    try:
+        run_material_analysis(analysis_id, raise_errors=True)
+    except SoftTimeLimitExceeded as exc:
+        if self.request.retries < settings.task_max_retries:
+            prepare_material_retry(analysis_id, "视频解析任务超过软超时限制")
+            raise self.retry(exc=exc, countdown=_retry_delay(self.request.retries))
+        raise
+    except Exception as exc:
+        if self.request.retries < settings.task_max_retries:
+            prepare_material_retry(analysis_id, exc)
+            raise self.retry(exc=exc, countdown=_retry_delay(self.request.retries))
+        raise
+    return analysis_id
 
 
 @celery_app.task(name="easy_teach.recover_stale_jobs")

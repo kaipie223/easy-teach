@@ -53,8 +53,16 @@
           <tbody>
             <tr v-for="project in projects" :key="project.project_id">
               <td>
-                <strong>{{ project.title }}</strong>
-                <span class="project-id">{{ project.project_id }}</span>
+                <div v-if="editingProjectId === project.project_id" class="title-editor">
+                  <el-input v-model="editingTitle" maxlength="120" @keyup.enter="saveProjectTitle(project)" @keyup.esc="cancelProjectTitle" />
+                  <el-tooltip content="保存名称"><el-button circle text type="primary" :loading="savingProject" @click="saveProjectTitle(project)"><el-icon><Check /></el-icon></el-button></el-tooltip>
+                  <el-tooltip content="取消编辑"><el-button circle text :disabled="savingProject" @click="cancelProjectTitle"><el-icon><Close /></el-icon></el-button></el-tooltip>
+                </div>
+                <div v-else class="project-title">
+                  <strong>{{ project.title }}</strong>
+                  <el-tag v-if="projectStore.activeProjectId === project.project_id" size="small" type="primary">当前项目</el-tag>
+                  <el-tooltip v-if="project.status !== 'deleted'" content="编辑项目名称"><el-button circle text @click="editProjectTitle(project)"><el-icon><EditPen /></el-icon></el-button></el-tooltip>
+                </div>
               </td>
               <td>{{ project.scenario || '未设置' }}</td>
               <td><span :class="['status-pill', project.status === 'deleted' ? 'draft' : 'running']">
@@ -82,13 +90,18 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CircleCheck, Delete, FolderOpened, Plus } from '@element-plus/icons-vue'
-import { deleteProject, fetchProjects, restoreProject } from '@/api'
+import { Check, CircleCheck, Close, Delete, EditPen, FolderOpened, Plus } from '@element-plus/icons-vue'
+import { deleteProject, restoreProject, updateProject } from '@/api'
+import { useProjectStore } from '@/stores/project'
 
 const router = useRouter()
+const projectStore = useProjectStore()
 const projects = ref([])
 const loading = ref(false)
 const errorMessage = ref('')
+const editingProjectId = ref('')
+const editingTitle = ref('')
+const savingProject = ref(false)
 
 const activeCount = computed(() => projects.value.filter(project => project.status !== 'deleted').length)
 const deletedCount = computed(() => projects.value.filter(project => project.status === 'deleted').length)
@@ -97,8 +110,7 @@ async function loadProjects() {
   loading.value = true
   errorMessage.value = ''
   try {
-    const response = await fetchProjects(true)
-    projects.value = response.data
+    projects.value = await projectStore.loadProjects(true)
   } catch (error) {
     errorMessage.value = error.response?.data?.error?.message || '项目加载失败，请重试'
   } finally {
@@ -107,7 +119,40 @@ async function loadProjects() {
 }
 
 function openProject(project) {
-  router.push(project.session_id ? `/chat/${project.session_id}` : `/home?projectId=${project.project_id}`)
+  projectStore.selectProject(project)
+  router.push('/requirements')
+}
+
+function editProjectTitle(project) {
+  editingProjectId.value = project.project_id
+  editingTitle.value = project.title
+}
+
+function cancelProjectTitle() {
+  editingProjectId.value = ''
+  editingTitle.value = ''
+}
+
+async function saveProjectTitle(project) {
+  const title = editingTitle.value.trim()
+  if (!title) {
+    ElMessage.warning('项目名称不能为空')
+    return
+  }
+  savingProject.value = true
+  try {
+    const response = await updateProject(project.project_id, { title })
+    Object.assign(project, response.data)
+    if (projectStore.activeProjectId === project.project_id) {
+      projectStore.updateActiveProject(response.data)
+    }
+    cancelProjectTitle()
+    ElMessage.success('项目名称已更新')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error?.message || '项目名称更新失败')
+  } finally {
+    savingProject.value = false
+  }
 }
 
 async function archiveProject(project) {
@@ -118,6 +163,9 @@ async function archiveProject(project) {
       type: 'warning',
     })
     await deleteProject(project.project_id)
+    if (projectStore.activeProjectId === project.project_id) {
+      projectStore.clearActiveProject()
+    }
     await loadProjects()
     ElMessage.success('项目已归档')
   } catch (error) {
@@ -138,6 +186,7 @@ async function restore(project) {
 }
 
 function go(path) {
+  if (path === '/home') projectStore.clearActiveProject()
   router.push(path)
 }
 
@@ -152,15 +201,12 @@ onMounted(loadProjects)
 </script>
 
 <style scoped>
-.project-id {
-  display: block;
-  margin-top: 4px;
-  color: #94a3b8;
-  font-size: 12px;
-}
+.project-title, .title-editor { display: flex; align-items: center; gap: 6px; min-width: 220px; }
+.title-editor :deep(.el-input) { max-width: 280px; }
 
 .link-actions {
   white-space: nowrap;
+  text-align: right;
 }
 
 @media (max-width: 720px) {

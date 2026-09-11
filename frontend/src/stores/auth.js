@@ -9,6 +9,7 @@ import {
   saveAuthSession,
   USER_KEY,
 } from '@/api'
+import { useProjectStore } from '@/stores/project'
 
 function readStoredUser() {
   try {
@@ -64,6 +65,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   function logout() {
     clearAuthSession()
+    useProjectStore().clearActiveProject()
     token.value = null
     user.value = null
   }

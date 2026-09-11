@@ -38,7 +38,7 @@ Returns the application identity and `status: "running"`.
 
 Returns API, database, Redis and Chroma status. Chroma uses
 `status: "not_indexed"` when the persistence directory exists but the
-`knowledge_base` collection has not been built yet.
+teacher-private `knowledge_user_<user_id>` collections have not been built yet.
 
 ```json
 {
@@ -354,11 +354,20 @@ GET    /api/v1/materials/{material_id}/download
 DELETE /api/v1/materials/{material_id}
 ```
 
-Uploads are parsed synchronously with page, slide, paragraph or image metadata
-stored in `material_analyses` and `evidence_chunks`. The material delete route
-is a soft delete: active bindings and evidence are invalidated, while the
-stored file remains isolated on disk. Video uploads return
-`VIDEO_PARSING_DEFERRED` until the later video milestone.
+PDF, DOCX, PPTX and image uploads are parsed synchronously with page, slide,
+paragraph or image metadata stored in `material_analyses` and
+`evidence_chunks`. Video uploads return quickly with `status: "queued"` and a
+pending `MaterialAnalysis`; the Celery worker parses the video and later moves
+the material to `ready` or `failed`. The material delete route is a soft delete:
+active bindings and evidence are invalidated, while the stored file remains
+isolated on disk.
+
+Video analysis uses the vendored `video-parser-model` pipeline. The default local
+configuration extracts ffprobe metadata, strategy keyframes, shot segments and
+timestamped evidence without ASR, OCR or paid cloud vision calls. Enable
+`VIDEO_PARSER_TRANSCRIBE`, `VIDEO_PARSER_OCR`, `VIDEO_PARSER_VISION` or
+`VIDEO_PARSER_UNDERSTANDING` in the server environment to opt into the richer
+model stages. Parser artifacts are written under `VIDEO_PARSER_OUTPUT_DIR`.
 
 The binding payload accepts multiple `usage_type` values, including
 `content_basis`, `knowledge_structure`, `case_source`, `visual_style`,
@@ -404,13 +413,19 @@ The worker retries transient failures up to `TASK_MAX_RETRIES`, applies the
 configured soft/hard time limits, and the periodic stale-job recovery task
 requeues jobs whose heartbeat lease has expired.
 
-### `POST /api/v1/feedback`
+### `POST /api/v1/generate/feedback`
 
 Request:
 
 ```json
 {"task_id": "task_12345678", "feedback": "简化第 3 页"}
 ```
+
+Requires authentication. The task must be bound to an artifact version. A
+successful request returns `201` with a persisted `patch_id` and status
+`revision_preview_created`; the caller applies that preview through
+`POST /api/v1/projects/{project_id}/revisions/apply`. Unsupported or ambiguous
+instructions return a structured `422` instead of a false success response.
 
 ## Downloads
 
@@ -427,8 +442,9 @@ Returns the user list for administrators. A valid non-admin token receives
 
 ## Knowledge base
 
-Knowledge-base writes require an administrator token. Teachers can list only
-enabled, indexed documents and can use the search endpoint.
+Knowledge-base content is private to each teacher. Every write, index, list and
+search operation is restricted to the authenticated teacher's `owner_id`;
+administrators have no cross-account knowledge-base access.
 
 ```text
 GET    /api/v1/knowledge/documents
@@ -440,13 +456,27 @@ POST   /api/v1/knowledge/documents/{id}/index   # rebuild and verify one doc
 POST   /api/v1/knowledge/search                 # authenticated retrieval
 ```
 
-Import persists the document and immutable `evidence_chunks` first. Indexing
-rebuilds the `knowledge_base` Chroma collection from enabled, valid evidence
-and preserves `evidence_id`, document ID and locator metadata in retrieval
-results. A model download or embedding failure marks affected documents as
+Import persists the document and immutable `evidence_chunks` first. Every
+operation requires a teacher account and filters by `owner_id`. Indexing rebuilds
+that teacher's `knowledge_user_<user_id>` Chroma collection from enabled, valid
+evidence and preserves `evidence_id`, document ID and locator metadata in retrieval
+results. Administrators cannot read, upload, index or search teacher knowledge.
+A model download or embedding failure marks affected documents as
 `failed`; the same index endpoint can be retried after the model service is
 available. The current implementation is a synchronous request with a long
 client timeout; Celery progress reporting remains a later task milestone.
+
+## Courseware blueprint contract
+
+`CoursewarePlan.content.output_specs` contains independent `pptx`, `docx`,
+`pdf` and `html` specifications. The renderers consume these fields directly;
+PPT speaker notes, DOCX preparation/homework/reflection, PDF summary/checklist
+and HTML feedback/retry behavior are not inferred from one shared text block.
+
+`POST /api/v1/projects/{project_id}/plan/revisions` creates a new immutable
+manual plan version. It preserves stable IDs, evidence references and the
+confirmed brief anchors. A stale base plan returns `409`; structural changes or
+an invalid lesson-duration total return `422`.
 
 ## M6 quality and queue contract
 
@@ -455,10 +485,10 @@ Every project artifact version stores a deterministic quality report with
 structural issues fail generation; warnings such as missing evidence links do
 not discard the artifact and remain visible in the version response.
 
-Celery task names are `easy_teach.generate`, `easy_teach.export` and
-`easy_teach.recover_stale_jobs`. The worker uses an independent SQLAlchemy
-session, late acknowledgements and a single-job prefetch to keep task state
-recoverable after a worker restart.
+Celery task names are `easy_teach.generate`, `easy_teach.export`,
+`easy_teach.parse_material` and `easy_teach.recover_stale_jobs`. The worker uses
+an independent SQLAlchemy session, late acknowledgements and a single-job
+prefetch to keep task state recoverable after a worker restart.
 
 ## Compatibility Note
 

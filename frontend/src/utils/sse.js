@@ -5,6 +5,7 @@
  * SSE 事件类型：
  *   - question   → AI 向教师提问（需渲染追问卡片）
  *   - confirm    → AI 总结确认（需渲染确认面板）
+ *   - error      → AI 或业务处理失败（不能当作普通追问）
  *   - text       → 普通文本（打字机逐字追加）
  *   - [DONE]     → 流结束信号
  */
@@ -47,6 +48,11 @@ export class SSEClient {
 
       if (!response.ok) {
         throw new Error(`SSE 连接失败: HTTP ${response.status}`)
+      }
+
+      if (response.status === 204 || !response.body) {
+        this.callbacks.onDone?.()
+        return
       }
 
       this.reader = response.body.getReader()
@@ -118,6 +124,12 @@ export class SSEClient {
         break
       case 'confirm':
         this.callbacks.onConfirm?.(parsed.data || parsed)
+        break
+      case 'error':
+        this.callbacks.onServiceError?.({
+          message: parsed.content || 'AI 服务处理失败',
+          ...(parsed.data || {}),
+        })
         break
       case 'text':
       default:

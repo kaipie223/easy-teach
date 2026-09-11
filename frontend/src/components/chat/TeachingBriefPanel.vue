@@ -46,6 +46,7 @@
           <el-select v-model="form.output_types" multiple :disabled="isConfirmed" style="width: 100%">
             <el-option label="PPT 课件" value="pptx" />
             <el-option label="Word 教案" value="docx" />
+            <el-option label="PDF 打印版" value="pdf" />
             <el-option label="互动 HTML" value="html" />
           </el-select>
         </el-form-item>
@@ -70,7 +71,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 
 const props = defineProps({
   brief: { type: Object, default: null },
@@ -92,13 +93,15 @@ const form = reactive({
 })
 
 const isConfirmed = computed(() => props.brief?.status === 'confirmed')
+const knowledgePointDetails = ref([])
 
 function syncForm(brief) {
   if (!brief) return
   form.teaching_goal = brief.teaching_goal || ''
   form.target_audience = brief.target_audience || ''
   form.duration_minutes = brief.duration_minutes || 45
-  form.knowledge_points = (brief.knowledge_points || []).map(item => item.title).join('\n')
+  knowledgePointDetails.value = (brief.knowledge_points || []).map(item => ({ ...item }))
+  form.knowledge_points = knowledgePointDetails.value.map(item => item.title).join('\n')
   form.logic_flow = (brief.logic_flow || []).join('\n')
   form.teaching_focus = brief.teaching_focus || ''
   form.teaching_difficulties = brief.teaching_difficulties || ''
@@ -107,11 +110,27 @@ function syncForm(brief) {
 }
 
 function save() {
+  const previousByTitle = new Map(
+    knowledgePointDetails.value.map(item => [item.title.trim(), item]),
+  )
   emit('save', {
     ...form,
     knowledge_points: form.knowledge_points
       .split(/\r?\n/)
-      .map((title, index) => title.trim() && ({ order: index + 1, title: title.trim() }))
+      .map((title, index) => {
+        const normalizedTitle = title.trim()
+        if (!normalizedTitle) return null
+        const previous = previousByTitle.get(normalizedTitle) || knowledgePointDetails.value[index] || {}
+        return {
+          ...previous,
+          order: index + 1,
+          title: normalizedTitle,
+          difficulty: previous.difficulty || 'basic',
+          key_points: [...(previous.key_points || [])],
+          examples: [...(previous.examples || [])],
+          estimated_minutes: previous.estimated_minutes || 5,
+        }
+      })
       .filter(Boolean),
     logic_flow: form.logic_flow.split(/\r?\n/).map(item => item.trim()).filter(Boolean),
   })

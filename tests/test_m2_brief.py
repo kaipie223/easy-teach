@@ -1,6 +1,8 @@
 from backend.db.database import get_db
 from backend.main import app
 from backend.models.brief import TeachingBrief
+from backend.schemas import IntentResult, KnowledgePoint
+from backend.services.intent import probing_policy
 
 
 def register(client, email: str):
@@ -46,7 +48,7 @@ def complete_brief_payload(**overrides):
     return payload
 
 
-def test_project_messages_persist_sse_events_and_brief(client):
+def test_project_messages_persist_sse_events_and_brief(client, stub_intent_analyzer):
     headers = register(client, "m2-events@example.com")
     project = client.post(
         "/api/v1/projects",
@@ -94,7 +96,7 @@ def test_project_messages_persist_sse_events_and_brief(client):
     assert session.json()["brief_id"] == brief_data["brief_id"]
 
 
-def test_teaching_brief_validation_confirmation_and_versioning(client):
+def test_teaching_brief_validation_confirmation_and_versioning(client, stub_intent_analyzer):
     headers = register(client, "m2-brief@example.com")
     project = client.post(
         "/api/v1/projects",
@@ -186,3 +188,121 @@ def test_teaching_brief_validation_confirmation_and_versioning(client):
         assert versions[1].status == "confirmed"
     finally:
         db.close()
+
+
+def test_ai_populates_full_brief_and_preserves_teacher_fields(client, monkeypatch):
+    headers = register(client, "m2-ai-merge@example.com")
+    project = client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={"title": "浮力及其应用"},
+    )
+    project_id = project.json()["project_id"]
+
+    def analyze(_self, _session_id, _messages):
+        return IntentResult(
+            teaching_goal="理解浮力并解释生活中的浮力现象",
+            target_audience="初二学生",
+            duration_minutes=45,
+            knowledge_points=[
+                KnowledgePoint(order=1, title="浮力概念", estimated_minutes=15),
+                KnowledgePoint(order=2, title="阿基米德原理", estimated_minutes=20),
+            ],
+            logic_flow=["情境导入", "实验探究", "规律应用", "总结"],
+            teaching_focus="影响浮力大小的因素",
+            teaching_difficulties="阿基米德原理的理解与应用",
+            output_types=["pptx", "docx", "html"],
+            interaction_ideas="根据实验数据判断浮力变化",
+            style_preference="实验探究",
+            existing_knowledge="会测量力和体积",
+            case_preference="轮船和潜水艇",
+            homework_type="生活现象解释题",
+            is_complete=True,
+            confirm_summary="已形成浮力课程需求。",
+        )
+
+    monkeypatch.setattr("backend.services.intent.IntentAnalyzer.analyze", analyze)
+    first = client.post(
+        f"/api/v1/projects/{project_id}/messages",
+        headers=headers,
+        json={"message": "设计一节浮力课"},
+    )
+    assert first.status_code == 200
+    assert "event: confirm" in first.text
+
+    brief = client.get(f"/api/v1/projects/{project_id}/brief", headers=headers).json()
+    assert brief["teaching_focus"] == "影响浮力大小的因素"
+    assert brief["teaching_difficulties"] == "阿基米德原理的理解与应用"
+    assert brief["output_types"] == ["pptx", "docx", "html"]
+    assert brief["content"]["case_preference"] == "轮船和潜水艇"
+    assert '"brief_id"' in first.text
+
+    updated = client.patch(
+        f"/api/v1/projects/{project_id}/brief",
+        headers=headers,
+        json={"teaching_focus": "教师指定：比较漂浮、悬浮和沉底"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["source_refs"]["teaching_focus"] == "teacher"
+
+    second = client.post(
+        f"/api/v1/projects/{project_id}/messages",
+        headers=headers,
+        json={"message": "再补充一个课堂案例"},
+    )
+    assert second.status_code == 200
+    merged = client.get(f"/api/v1/projects/{project_id}/brief", headers=headers).json()
+    assert merged["teaching_focus"] == "教师指定：比较漂浮、悬浮和沉底"
+    assert merged["source_refs"]["teaching_focus"] == "teacher"
+
+
+def test_brief_knowledge_point_edit_preserves_structured_details(client):
+    headers = register(client, "m2-knowledge-point-edit@example.com")
+    project = client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={"title": "知识点结构保存"},
+    )
+    project_id = project.json()["project_id"]
+
+    created = client.patch(
+        f"/api/v1/projects/{project_id}/brief",
+        headers=headers,
+        json=complete_brief_payload(),
+    )
+    assert created.status_code == 200, created.text
+    original = created.json()["knowledge_points"][0]
+    assert original["point_id"].startswith("kp_")
+
+    edited_point = {**original, "title": "TCP 连接建立与状态变化"}
+    edited = client.patch(
+        f"/api/v1/projects/{project_id}/brief",
+        headers=headers,
+        json={"knowledge_points": [edited_point, created.json()["knowledge_points"][1]]},
+    )
+    assert edited.status_code == 200, edited.text
+    saved = edited.json()["knowledge_points"][0]
+    assert saved["point_id"] == original["point_id"]
+    assert saved["difficulty"] == "basic"
+    assert saved["key_points"] == ["SYN", "SYN-ACK", "ACK"]
+    assert saved["examples"] == ["客户端与服务器建立连接"]
+    assert saved["estimated_minutes"] == 20
+
+
+def test_intent_probing_policy_matches_request_complexity():
+    simple = probing_policy([{"role": "user", "content": "给初一学生讲一节勾股定理课"}])
+    assert "只追问 1 个" in simple
+
+    complex_policy = probing_policy(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "设计跨学科项目式实验课程，需要分层教学和设备安排，"
+                    "同时输出 PPT、Word、PDF 和 HTML。"
+                ),
+            }
+        ]
+    )
+    assert "最多追问 2 项" in complex_policy
+    assert "课堂设备" in complex_policy
