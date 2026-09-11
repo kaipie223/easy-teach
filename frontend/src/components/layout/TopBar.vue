@@ -4,16 +4,13 @@
       <el-icon class="home-icon"><House /></el-icon>
       <span class="slash">/</span>
       <span>{{ currentTitle }}</span>
+      <template v-if="activeProjectName">
+        <span class="slash">/</span>
+        <span class="project-context" :title="activeProjectName">{{ activeProjectName }}</span>
+      </template>
     </div>
 
     <div class="top-actions">
-      <div class="autosave">
-        <el-icon><CircleCheck /></el-icon>
-        <span>已自动保存</span>
-      </div>
-      <button class="icon-button" type="button" aria-label="通知">
-        <el-icon><Bell /></el-icon>
-      </button>
       <div class="user-menu">
         <el-avatar :size="32">
           <el-icon><UserFilled /></el-icon>
@@ -28,14 +25,17 @@
 <script setup>
 import { computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Bell, CircleCheck, House, UserFilled } from '@element-plus/icons-vue'
+import { House, UserFilled } from '@element-plus/icons-vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useProjectStore } from '@/stores/project'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const projectStore = useProjectStore()
 const currentTitle = computed(() => route.meta.title || '工作台')
+const activeProjectName = computed(() => projectStore.activeProject?.title || '')
 
 function logout() {
   auth.logout()
@@ -72,41 +72,20 @@ function logout() {
   color: #9ca3af;
 }
 
+.project-context {
+  max-width: 240px;
+  overflow: hidden;
+  color: #1463ff;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .top-actions {
   display: flex;
   align-items: center;
   gap: 16px;
   flex: 0 0 auto;
-}
-
-.autosave {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #374151;
-  font-size: 14px;
-  white-space: nowrap;
-}
-
-.autosave .el-icon {
-  color: #16a34a;
-}
-
-.icon-button {
-  width: 36px;
-  height: 36px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: #374151;
-  cursor: pointer;
-}
-
-.icon-button:hover {
-  background: #f3f4f6;
 }
 
 .user-menu {
@@ -133,7 +112,6 @@ function logout() {
     padding: 0 16px;
   }
 
-  .autosave,
   .user-menu span,
   .arrow {
     display: none;

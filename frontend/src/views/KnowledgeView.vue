@@ -2,8 +2,8 @@
   <div class="page-stack">
     <header class="page-header">
       <div>
-        <h1>知识库管理</h1>
-        <p>导入可复用教学资料，启用后建立索引，教师检索时只使用已就绪文档。</p>
+        <h1>我的知识库</h1>
+        <p>管理仅属于当前教师账号的教学资料；课程生成只检索你已启用并完成索引的文档。</p>
       </div>
       <el-button :loading="loading" text @click="loadDocuments">
         <el-icon><Refresh /></el-icon>
@@ -22,7 +22,7 @@
     <section class="section-card">
       <div class="section-header">
         <div>
-          <h2>导入知识库文档</h2>
+          <h2>导入我的文档</h2>
           <p>支持 PDF、Word、PPT、TXT 和 Markdown；导入完成后仍需建立向量索引。</p>
         </div>
       </div>
@@ -94,13 +94,23 @@
       </div>
 
       <el-skeleton v-if="loading" :rows="5" animated />
-      <el-empty v-else-if="!documents.length" description="还没有知识库文档">
+      <el-empty v-else-if="!documents.length" description="你的知识库还没有文档">
         <el-button type="primary" @click="fileInput?.click()">
           <el-icon><Upload /></el-icon>
           导入第一份文档
         </el-button>
       </el-empty>
-      <div v-else class="table-wrap">
+      <template v-else>
+        <el-alert
+          v-if="indexing || documents.some(document => document.indexing)"
+          title="正在生成中文向量索引"
+          description="首次运行需要下载轻量向量模型，完成前请不要重复提交。"
+          type="info"
+          show-icon
+          :closable="false"
+          class="indexing-alert"
+        />
+        <div class="table-wrap">
         <table class="data-table knowledge-table">
           <thead>
             <tr>
@@ -144,7 +154,7 @@
                   @click="indexDocument(document)"
                 >
                   <el-icon><Refresh /></el-icon>
-                  索引
+                  {{ document.index_status === 'failed' ? '重试' : '重建' }}
                 </el-button>
                 <el-button link type="danger" @click="removeDocument(document)">
                   <el-icon><Delete /></el-icon>
@@ -154,7 +164,8 @@
             </tr>
           </tbody>
         </table>
-      </div>
+        </div>
+      </template>
     </section>
 
     <section class="section-card">
@@ -304,6 +315,7 @@ async function rebuildIndex() {
     ElMessage.success('知识库索引已建立')
   } catch (error) {
     pageError.value = apiErrorMessage(error, '索引建立失败，请检查模型和网络后重试')
+    await loadDocuments()
   } finally {
     indexing.value = false
   }
@@ -317,11 +329,10 @@ async function indexDocument(document) {
     await loadDocuments()
     ElMessage.success(`“${document.title}”已完成索引`)
   } catch (error) {
-    Object.assign(document, {
-      index_status: 'failed',
-      error_message: apiErrorMessage(error, '文档索引失败，请重试'),
-    })
-    ElMessage.error(document.error_message)
+    const message = apiErrorMessage(error, '文档索引失败，请重试')
+    pageError.value = message
+    await loadDocuments()
+    ElMessage.error(message)
   } finally {
     document.indexing = false
   }
@@ -399,7 +410,10 @@ function locatorLabel(locator = {}) {
 }
 
 function apiErrorMessage(error, fallback) {
-  return error.response?.data?.error?.message || error.message || fallback
+  const apiError = error.response?.data?.error
+  const message = apiError?.message || error.message || fallback
+  const action = apiError?.suggested_action
+  return action && action !== message ? `${message}；${action}` : message
 }
 </script>
 
@@ -451,6 +465,10 @@ function apiErrorMessage(error, fallback) {
 
 .inline-alert {
   margin-top: 14px;
+}
+
+.indexing-alert {
+  margin-bottom: 14px;
 }
 
 .visually-hidden {

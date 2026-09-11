@@ -23,12 +23,21 @@ from backend.schemas import (
     MaterialBindingReplaceRequest,
     MaterialInfo,
 )
+from backend.services.task_queue import enqueue_material_analysis
 from backend.services.materials import (
-    PARSER_VERSION,
     MaterialValidationError,
-    checksum_sha256,
-    detect_file_type,
+    apply_parsed_material,
+    detect_file_type_from_path,
+    fail_material_analysis,
     parse_material,
+    parser_identity,
+)
+from backend.services.limits import remaining_storage_bytes
+from backend.services.uploads import (
+    UploadSizeExceeded,
+    remove_managed_file,
+    remove_staged_upload,
+    stream_upload_to_path,
 )
 
 router = APIRouter()
@@ -79,44 +88,62 @@ async def upload_material(
     if not file.filename:
         raise ApiError("文件名为空", code="INVALID_MATERIAL_NAME", status_code=400)
 
-    content = await file.read(settings.max_upload_size_mb * 1024 * 1024 + 1)
-    if len(content) > settings.max_upload_size_mb * 1024 * 1024:
-        raise ApiError(
-            f"文件超过 {settings.max_upload_size_mb} MB 限制",
-            code="MATERIAL_TOO_LARGE",
-            status_code=413,
-        )
-
-    try:
-        file_type, mime_type = detect_file_type(file.filename, content)
-    except MaterialValidationError as exc:
-        raise ApiError(str(exc), code=exc.code, status_code=422, details=exc.details) from exc
-
-    if file_type == "video":
-        raise ApiError(
-            "视频资料上传已预留，解析将在后续阶段启用",
-            code="VIDEO_PARSING_DEFERRED",
-            status_code=422,
-            suggested_action="先使用 PDF、Word、PPT 或图片资料",
-        )
-    if file_type == "image" and len(content) > 15 * 1024 * 1024:
-        raise ApiError(
-            "图片超过 15 MB 限制",
-            code="IMAGE_TOO_LARGE",
-            status_code=413,
-        )
-
     session = None
     if session_id:
         session = get_session_for_user(db, session_id, user)
         if session.project_id != project.project_id:
             raise ApiError("会话不属于当前项目", code="SESSION_PROJECT_MISMATCH", status_code=409)
 
-    material_id = f"mat_{uuid.uuid4().hex[:8]}"
+    material_id = f"mat_{uuid.uuid4().hex[:24]}"
     safe_name = Path(file.filename).name
     stored_path = settings.upload_dir / material_id / safe_name
-    stored_path.parent.mkdir(parents=True, exist_ok=True)
-    stored_path.write_bytes(content)
+    max_file_bytes = settings.max_upload_size_mb * 1024 * 1024
+    remaining_bytes = remaining_storage_bytes(db, user.user_id)
+    if remaining_bytes <= 0:
+        raise ApiError(
+            "个人存储空间不足",
+            code="STORAGE_QUOTA_EXCEEDED",
+            status_code=413,
+            suggested_action="请删除不再需要的资料后重试",
+        )
+
+    try:
+        stored = await stream_upload_to_path(
+            file,
+            stored_path,
+            max_bytes=min(max_file_bytes, remaining_bytes),
+        )
+    except UploadSizeExceeded as exc:
+        quota_limited = remaining_bytes < max_file_bytes
+        raise ApiError(
+            "个人存储空间不足" if quota_limited else f"文件超过 {settings.max_upload_size_mb} MB 限制",
+            code="STORAGE_QUOTA_EXCEEDED" if quota_limited else "MATERIAL_TOO_LARGE",
+            status_code=413,
+            details={"max_bytes": exc.max_bytes, "actual_bytes": exc.actual_bytes},
+        ) from exc
+
+    try:
+        file_type, mime_type = detect_file_type_from_path(safe_name, stored_path)
+    except MaterialValidationError as exc:
+        remove_staged_upload(stored_path)
+        raise ApiError(str(exc), code=exc.code, status_code=422, details=exc.details) from exc
+
+    if file_type == "video" and not settings.video_parser_enabled:
+        remove_staged_upload(stored_path)
+        raise ApiError(
+            "视频资料解析暂未启用",
+            code="VIDEO_CAPABILITY_DISABLED",
+            status_code=409,
+            suggested_action="请先上传 PDF、Word 或 PPT 资料",
+        )
+
+    if file_type == "image" and stored.size_bytes > 15 * 1024 * 1024:
+        remove_staged_upload(stored_path)
+        raise ApiError(
+            "图片超过 15 MB 限制",
+            code="IMAGE_TOO_LARGE",
+            status_code=413,
+        )
 
     now = datetime.now(timezone.utc)
     material = Material(
@@ -128,70 +155,50 @@ async def upload_material(
         file_type=file_type,
         mime_type=mime_type,
         stored_path=str(stored_path),
-        size_bytes=len(content),
-        checksum_sha256=checksum_sha256(content),
-        status="processing",
+        size_bytes=stored.size_bytes,
+        checksum_sha256=stored.checksum_sha256,
+        status="queued" if file_type == "video" else "processing",
         ref_description=ref_description.strip() or None,
         created_at=now,
         updated_at=now,
     )
+    parser_name, parser_version = parser_identity(file_type)
     analysis = MaterialAnalysis(
-        analysis_id=f"analysis_{uuid.uuid4().hex[:8]}",
+        analysis_id=f"analysis_{uuid.uuid4().hex[:24]}",
         material_id=material_id,
         run_number=1,
-        parser_name=f"builtin_{file_type}",
-        parser_version=PARSER_VERSION,
-        status="processing",
-        started_at=now,
+        parser_name=parser_name,
+        parser_version=parser_version,
+        status="pending" if file_type == "video" else "processing",
+        started_at=None if file_type == "video" else now,
         created_at=now,
         updated_at=now,
     )
     db.add_all([material, analysis])
     db.commit()
 
+    if file_type == "video":
+        try:
+            enqueue_material_analysis(analysis.analysis_id, force=True, db=db)
+        except Exception as exc:
+            db.rollback()
+            material = db.query(Material).filter(Material.material_id == material_id).one()
+            analysis = db.query(MaterialAnalysis).filter(MaterialAnalysis.analysis_id == analysis.analysis_id).one()
+            fail_material_analysis(db, material, analysis, exc)
+            db.commit()
+            raise
+        db.refresh(material)
+        return _material_info(material)
+
     try:
         parsed = await run_in_threadpool(parse_material, file_type, stored_path)
-        analysis.status = "completed"
-        analysis.text_content = parsed.text_content
-        analysis.result_json = parsed.result_json
-        analysis.page_count = parsed.page_count
-        analysis.slide_count = parsed.slide_count
-        analysis.completed_at = datetime.now(timezone.utc)
-        analysis.updated_at = analysis.completed_at
-        material.status = "ready"
-        material.updated_at = analysis.completed_at
-        for index, chunk in enumerate(parsed.chunks):
-            db.add(
-                EvidenceChunk(
-                    evidence_id=f"evidence_{uuid.uuid4().hex[:8]}",
-                    material_id=material.material_id,
-                    analysis_id=analysis.analysis_id,
-                    source_type=f"uploaded_{file_type}",
-                    chunk_index=index,
-                    locator_json=chunk.locator,
-                    text=chunk.text,
-                    metadata_json=chunk.metadata,
-                    usage_tags=[],
-                    content_hash=checksum_sha256(chunk.text.encode("utf-8")),
-                    is_valid=True,
-                    created_at=analysis.completed_at,
-                )
-            )
+        apply_parsed_material(db, material, analysis, parsed)
         db.commit()
     except Exception as exc:
         db.rollback()
         material = db.query(Material).filter(Material.material_id == material_id).one()
         analysis = db.query(MaterialAnalysis).filter(MaterialAnalysis.analysis_id == analysis.analysis_id).one()
-        now = datetime.now(timezone.utc)
-        material.status = "failed"
-        material.error_code = "MATERIAL_PARSE_FAILED"
-        material.error_message = str(exc)
-        material.updated_at = now
-        analysis.status = "failed"
-        analysis.error_code = "MATERIAL_PARSE_FAILED"
-        analysis.error_message = str(exc)
-        analysis.completed_at = now
-        analysis.updated_at = now
+        fail_material_analysis(db, material, analysis, exc)
         db.commit()
         raise ApiError(
             "资料解析失败",
@@ -241,9 +248,18 @@ def delete_material(
     user: User = Depends(get_current_user),
 ):
     material = get_material_for_user(db, material_id, user)
+    try:
+        remove_managed_file(Path(material.stored_path), root=settings.upload_dir)
+    except ValueError as exc:
+        raise ApiError(
+            "资料存储路径异常，拒绝删除",
+            code="MATERIAL_STORAGE_PATH_INVALID",
+            status_code=500,
+        ) from exc
     now = datetime.now(timezone.utc)
     material.deleted_at = now
     material.status = "archived"
+    material.size_bytes = 0
     material.updated_at = now
     (
         db.query(MaterialBinding)
@@ -334,7 +350,7 @@ def replace_material_bindings(
     bindings = []
     for item in request.bindings:
         binding = MaterialBinding(
-            binding_id=f"bind_{uuid.uuid4().hex[:8]}",
+            binding_id=f"bind_{uuid.uuid4().hex[:24]}",
             material_id=material.material_id,
             project_id=project.project_id,
             created_by=user.user_id,

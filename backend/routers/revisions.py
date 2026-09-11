@@ -1,5 +1,6 @@
 """M5 revision, immutable version and version-bound export APIs."""
 
+import asyncio
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
@@ -15,6 +16,7 @@ from backend.models.user import User
 from backend.models.versioning import ArtifactVersion, ExportRecord, RevisionPatch
 from backend.schemas import (
     ArtifactVersionInfo,
+    AIRegenerateRequest,
     ExportBatchInfo,
     ExportCreateRequest,
     ExportInfo,
@@ -24,11 +26,14 @@ from backend.schemas import (
     RestoreVersionRequest,
 )
 from backend.services.exports import create_export_records, run_export, to_export_info  # noqa: F401
+from backend.services.limits import consume_model_quota
+from backend.services.revision_ai import RevisionAIError, find_target, regenerate_target
 from backend.services.task_queue import enqueue_export
 from backend.services.versions import (
     apply_operations,
     apply_patch,
     create_patch,
+    create_version,
     get_latest_version,
     get_version,
     interpret_instruction,
@@ -47,6 +52,25 @@ def _version_or_404(db: DBSession, project: Project, version_id: str) -> Artifac
     if version is None:
         raise ApiError("成果版本不存在", code="VERSION_NOT_FOUND", status_code=404)
     return version
+
+
+def _revision_ai_api_error(error: RevisionAIError) -> ApiError:
+    status_codes = {
+        "REVISION_TARGET_NOT_FOUND": 422,
+        "AI_NOT_CONFIGURED": 503,
+        "AI_RATE_LIMITED": 429,
+        "AI_TIMEOUT": 504,
+        "AI_CONNECTION_FAILED": 502,
+        "AI_PROVIDER_ERROR": 502,
+        "AI_INVALID_RESPONSE": 502,
+    }
+    return ApiError(
+        str(error),
+        code=error.code,
+        status_code=status_codes.get(error.code, 500),
+        recoverable=error.recoverable,
+        suggested_action="请刷新成果版本后重试" if error.recoverable else None,
+    )
 
 
 @project_router.get("/{project_id}/versions", response_model=list[ArtifactVersionInfo])
@@ -163,6 +187,69 @@ def apply_revision(
 
 
 @project_router.post(
+    "/{project_id}/revisions/regenerate",
+    response_model=ArtifactVersionInfo,
+    status_code=201,
+)
+async def regenerate_revision_target(
+    project_id: str,
+    request: AIRegenerateRequest,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    project = get_project_for_user(db, project_id, user)
+    base = _version_or_404(db, project, request.base_version_id)
+    current = get_latest_version(db, project.project_id)
+    if current is None or current.artifact_version_id != base.artifact_version_id:
+        raise ApiError(
+            "成果版本已变化，请基于最新版本重新生成",
+            code="VERSION_CONFLICT",
+            status_code=409,
+            details={
+                "expected": base.artifact_version_id,
+                "current": current.artifact_version_id if current else None,
+            },
+        )
+
+    snapshot = snapshot_spec(base)
+    try:
+        find_target(snapshot, request.target_type, request.target_id)
+    except RevisionAIError as error:
+        raise _revision_ai_api_error(error) from error
+    consume_model_quota(user.user_id)
+    try:
+        result = await asyncio.to_thread(
+            regenerate_target,
+            snapshot,
+            target_type=request.target_type,
+            target_id=request.target_id,
+            instruction=request.instruction,
+        )
+    except RevisionAIError as error:
+        raise _revision_ai_api_error(error) from error
+
+    version = create_version(
+        db,
+        project,
+        user_id=user.user_id,
+        source_plan_id=base.source_plan_id,
+        snapshot=result.spec,
+        base_version_id=base.artifact_version_id,
+        summary=f"AI 局部重生成 {request.target_id}：{request.instruction.strip()[:160]}",
+        generation_mode="ai",
+        model_name=result.model_name,
+        prompt_version=result.prompt_version,
+        usage=result.usage,
+        expected_latest_version_id=base.artifact_version_id,
+    )
+    version.quality_status = result.quality_report["status"]
+    version.quality_report = result.quality_report
+    db.commit()
+    db.refresh(version)
+    return to_version_info(version)
+
+
+@project_router.post(
     "/{project_id}/versions/{version_id}/restore",
     response_model=ArtifactVersionInfo,
     status_code=201,
@@ -243,9 +330,10 @@ def list_project_exports(
 
 
 def _export_for_user(db: DBSession, export_id: str, user: User) -> ExportRecord:
-    query = db.query(ExportRecord).filter(ExportRecord.export_id == export_id)
-    if user.role != "admin":
-        query = query.filter(ExportRecord.user_id == user.user_id)
+    query = db.query(ExportRecord).filter(
+        ExportRecord.export_id == export_id,
+        ExportRecord.user_id == user.user_id,
+    )
     record = query.first()
     if record is None:
         raise ApiError("导出记录不存在", code="EXPORT_NOT_FOUND", status_code=404)
@@ -281,6 +369,7 @@ def download_export(
     media_type = {
         "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "pdf": "application/pdf",
         "html": "text/html",
     }.get(record.format, "application/octet-stream")
     return FileResponse(path, media_type=media_type, filename=record.file_name)

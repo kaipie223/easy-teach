@@ -1,15 +1,19 @@
 """Easy-Teach 后端入口 — FastAPI 应用"""
 
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.config import settings
 from backend.core import configure_logging, ensure_runtime_directories, register_exception_handlers
+from backend.core.errors import build_error_response
 from backend.db.database import engine
 from backend.routers import (
     admin,
@@ -29,12 +33,19 @@ from backend.routers import (
     upload,
 )
 from backend.schemas import HealthResponse
+from backend.services.limits import check_request_rate_limit
 
 # 导入所有 ORM 模型，确保它们注册到 Base.metadata
 import backend.models  # noqa: F401 — 触发 models/__init__.py 中的全部注册
 
 configure_logging()
+if not settings.chroma_anonymized_telemetry:
+    # Chroma 0.5 still invokes a disabled PostHog client whose newer API logs
+    # a false capture signature error. Telemetry remains disabled by settings.
+    logging.getLogger("chromadb.telemetry.product.posthog").setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
+IS_PRODUCTION = settings.environment.lower() in {"production", "prod"}
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 
 @asynccontextmanager
@@ -50,6 +61,9 @@ app = FastAPI(
     version=settings.app_version,
     debug=settings.debug,
     lifespan=lifespan,
+    docs_url=None if IS_PRODUCTION else "/docs",
+    redoc_url=None if IS_PRODUCTION else "/redoc",
+    openapi_url=None if IS_PRODUCTION else "/openapi.json",
 )
 
 register_exception_handlers(app)
@@ -57,7 +71,12 @@ register_exception_handlers(app)
 
 @app.middleware("http")
 async def add_request_context(request: Request, call_next):
-    request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+    supplied_request_id = request.headers.get("X-Request-ID", "")
+    request_id = (
+        supplied_request_id
+        if REQUEST_ID_PATTERN.fullmatch(supplied_request_id)
+        else str(uuid.uuid4())
+    )
     request.state.request_id = request_id
     started_at = time.perf_counter()
 
@@ -73,6 +92,38 @@ async def add_request_context(request: Request, call_next):
         request_id,
     )
     return response
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=()")
+    if request.url.path.startswith("/api/v1/auth/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
+
+
+@app.middleware("http")
+async def enforce_request_rate_limit(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in {"/", "/health"}:
+        return await call_next(request)
+    result = await run_in_threadpool(check_request_rate_limit, request)
+    if result.exceeded:
+        return JSONResponse(
+            status_code=429,
+            content=build_error_response(
+                request,
+                code="REQUEST_RATE_LIMITED",
+                message="请求过于频繁",
+                details={"requests_per_minute": result.limit},
+                suggested_action=f"请等待 {result.retry_after} 秒后重试",
+            ),
+            headers={"Retry-After": str(result.retry_after)},
+        )
+    return await call_next(request)
 
 
 app.add_middleware(
@@ -119,12 +170,20 @@ def health():
         item["status"] in {"ok", "not_configured", "not_indexed"}
         for item in checks.values()
     )
+    visible_checks = checks
+    if settings.environment.lower() in {"production", "prod"}:
+        # Public health checks must be useful to a load balancer without
+        # disclosing filesystem paths, dependency hosts or exception details.
+        visible_checks = {
+            name: {"status": item["status"]}
+            for name, item in checks.items()
+        }
     return {
         "app": settings.app_name,
         "version": settings.app_version,
         "environment": settings.environment,
         "status": "ok" if healthy else "degraded",
-        "checks": checks,
+        "checks": visible_checks,
     }
 
 
@@ -150,21 +209,28 @@ def _dependency_checks() -> dict[str, dict[str, str]]:
             client = chromadb.PersistentClient(path=str(chroma_path))
             collections = client.list_collections()
             names = [item.name if hasattr(item, "name") else str(item) for item in collections]
-            if "knowledge_base" not in names:
+            knowledge_names = [name for name in names if name.startswith("knowledge_user_")]
+            if not knowledge_names:
                 checks["chroma"] = {"status": "not_indexed", "path": str(chroma_path), "count": 0}
             else:
-                collection = client.get_collection("knowledge_base")
-                count = collection.count()
-                # count() only reads Chroma metadata. peek() also opens the
-                # persisted HNSW index and catches incomplete/corrupt files.
-                if count > 0:
-                    preview = collection.peek(limit=1)
-                    if not preview.get("ids"):
-                        raise RuntimeError("Chroma collection contains records but cannot read an index entry")
+                count = 0
+                for collection_name in knowledge_names:
+                    collection = client.get_collection(collection_name)
+                    collection_count = collection.count()
+                    count += collection_count
+                    # count() only reads Chroma metadata. peek() also opens the
+                    # persisted HNSW index and catches incomplete/corrupt files.
+                    if collection_count > 0:
+                        preview = collection.peek(limit=1)
+                        if not preview.get("ids"):
+                            raise RuntimeError(
+                                "Chroma collection contains records but cannot read an index entry"
+                            )
                 checks["chroma"] = {
                     "status": "ok" if count > 0 else "not_indexed",
                     "path": str(chroma_path),
                     "count": count,
+                    "collections": len(knowledge_names),
                 }
         except Exception as exc:
             logger.warning("Chroma health check failed: %s", exc)

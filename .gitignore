@@ -12,6 +12,11 @@ dist/
 
 # Environment
 .env
+secrets/
+backups/
+hotfix-backups/
+retired-project-backups/
+easy-teach-*-hotfix-*.tar.gz
 
 # IDE
 .vscode/
@@ -39,6 +44,4 @@ test-results/
 
 # ChromaDB
 chroma_data/
-
-# Managed knowledge-base copies are runtime data, not source fixtures.
 knowledge-base/.managed/

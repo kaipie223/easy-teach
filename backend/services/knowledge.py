@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import mimetypes
+import codecs
+import logging
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
@@ -22,10 +25,18 @@ from backend.services.materials import (
     ParsedMaterial,
     MaterialValidationError,
     checksum_sha256,
-    detect_file_type,
+    detect_file_type_from_path,
     parse_material,
 )
+from backend.services.knowledge_scope import (
+    activate_knowledge_collection,
+    knowledge_storage_dir,
+    staged_knowledge_collection_name,
+)
 from backend.services.rag import reset_retriever
+
+
+logger = logging.getLogger(__name__)
 
 
 TEXT_EXTENSIONS = {".txt", ".md"}
@@ -49,6 +60,34 @@ class KnowledgeIndexError(RuntimeError):
         self.details = details or {}
 
 
+@contextmanager
+def _knowledge_index_lock(owner_id: str):
+    """Use Redis in production and a process lock in development/tests."""
+    if settings.environment.lower() not in {"production", "prod"}:
+        with _INDEX_REBUILD_LOCK:
+            yield
+        return
+
+    import redis
+
+    client = redis.Redis.from_url(settings.redis_url)
+    lock = client.lock(
+        f"easy-teach:knowledge-index:{owner_id}",
+        timeout=max(settings.task_time_limit_seconds, 60),
+        blocking_timeout=5,
+    )
+    acquired = lock.acquire(blocking=True)
+    if not acquired:
+        raise KnowledgeIndexError(
+            "该知识库正在重建索引",
+            details={"owner_id": owner_id},
+        )
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -63,12 +102,16 @@ def _safe_filename(filename: str) -> str:
     return safe_name
 
 
-def detect_knowledge_file_type(filename: str, content: bytes) -> tuple[str, str]:
+def detect_knowledge_file_type(filename: str, path: Path) -> tuple[str, str]:
     """Validate supported knowledge-base files, including plain text."""
     extension = Path(filename).suffix.lower()
     if extension in TEXT_EXTENSIONS:
         try:
-            content.decode("utf-8")
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            with path.open("rb") as source:
+                while chunk := source.read(64 * 1024):
+                    decoder.decode(chunk)
+                decoder.decode(b"", final=True)
         except UnicodeDecodeError as exc:
             raise KnowledgeValidationError(
                 "文本文件必须使用 UTF-8 编码",
@@ -77,13 +120,13 @@ def detect_knowledge_file_type(filename: str, content: bytes) -> tuple[str, str]
         return "text", mimetypes.guess_type(filename)[0] or "text/plain"
 
     try:
-        return detect_file_type(filename, content)
+        return detect_file_type_from_path(filename, path)
     except MaterialValidationError as exc:
         raise KnowledgeValidationError(str(exc), code=exc.code, details=exc.details) from exc
 
 
-def _parse_text(content: bytes) -> ParsedMaterial:
-    text = content.decode("utf-8").strip()
+def _parse_text(path: Path) -> ParsedMaterial:
+    text = path.read_text(encoding="utf-8").strip()
     chunks: list[ParsedChunk] = []
     for offset in range(0, len(text), MAX_CHUNK_CHARS):
         part = text[offset : offset + MAX_CHUNK_CHARS].strip()
@@ -103,16 +146,17 @@ def _parse_text(content: bytes) -> ParsedMaterial:
     )
 
 
-def _parse_knowledge(file_type: str, path: Path, content: bytes) -> ParsedMaterial:
+def _parse_knowledge(file_type: str, path: Path) -> ParsedMaterial:
     if file_type == "text":
-        return _parse_text(content)
+        return _parse_text(path)
     return parse_material(file_type, path)
 
 
-def _next_version(db: DBSession, collection_id: str, title: str) -> int:
+def _next_version(db: DBSession, owner_id: str, collection_id: str, title: str) -> int:
     latest = (
         db.query(KnowledgeDocument)
         .filter(
+            KnowledgeDocument.owner_id == owner_id,
             KnowledgeDocument.collection_id == collection_id,
             KnowledgeDocument.title == title,
         )
@@ -124,7 +168,7 @@ def _next_version(db: DBSession, collection_id: str, title: str) -> int:
 
 def _relative_source_path(path: Path) -> str:
     try:
-        return path.resolve().relative_to(settings.knowledge_base_dir.resolve()).as_posix()
+        return path.resolve().relative_to(settings.data_dir.resolve()).as_posix()
     except ValueError:
         return path.as_posix()
 
@@ -136,7 +180,9 @@ def import_document(
     collection_id: str,
     title: str,
     filename: str,
-    content: bytes,
+    staged_path: Path,
+    size_bytes: int,
+    checksum: str,
     enabled: bool = False,
 ) -> KnowledgeDocument:
     """Persist a managed document and its immutable evidence chunks."""
@@ -149,11 +195,11 @@ def import_document(
 
     safe_name = _safe_filename(filename)
     normalized_title = title.strip() or Path(safe_name).stem
-    file_type, mime_type = detect_knowledge_file_type(safe_name, content)
-    checksum = checksum_sha256(content)
+    file_type, mime_type = detect_knowledge_file_type(safe_name, staged_path)
     duplicate = (
         db.query(KnowledgeDocument)
         .filter(
+            KnowledgeDocument.owner_id == owner_id,
             KnowledgeDocument.collection_id == collection_id,
             KnowledgeDocument.checksum_sha256 == checksum,
             KnowledgeDocument.deleted_at.is_(None),
@@ -167,10 +213,10 @@ def import_document(
             details={"document_id": duplicate.document_id},
         )
 
-    document_id = f"kb_{uuid.uuid4().hex[:8]}"
-    stored_path = settings.knowledge_base_dir / ".managed" / document_id / safe_name
+    document_id = f"kb_{uuid.uuid4().hex[:24]}"
+    stored_path = knowledge_storage_dir(owner_id) / document_id / safe_name
     stored_path.parent.mkdir(parents=True, exist_ok=True)
-    stored_path.write_bytes(content)
+    staged_path.replace(stored_path)
 
     now = _now()
     document = KnowledgeDocument(
@@ -180,11 +226,11 @@ def import_document(
         title=normalized_title,
         source_path=_relative_source_path(stored_path),
         file_type=file_type,
-        version=_next_version(db, collection_id, normalized_title),
+        version=_next_version(db, owner_id, collection_id, normalized_title),
         checksum_sha256=checksum,
         enabled=enabled,
         index_status="pending",
-        metadata_json={"mime_type": mime_type},
+        metadata_json={"mime_type": mime_type, "size_bytes": size_bytes},
         created_at=now,
         updated_at=now,
     )
@@ -192,7 +238,7 @@ def import_document(
     db.flush()
 
     try:
-        parsed = _parse_knowledge(file_type, stored_path, content)
+        parsed = _parse_knowledge(file_type, stored_path)
     except Exception as exc:
         document.index_status = "failed"
         document.error_code = "KNOWLEDGE_PARSE_FAILED"
@@ -205,12 +251,13 @@ def import_document(
     document.metadata_json = {
         **(parsed.result_json or {}),
         "mime_type": mime_type,
+        "size_bytes": size_bytes,
         "chunk_count": len(parsed.chunks),
     }
     for index, chunk in enumerate(parsed.chunks):
         db.add(
             EvidenceChunk(
-                evidence_id=f"evidence_{uuid.uuid4().hex[:8]}",
+                evidence_id=f"evidence_{uuid.uuid4().hex[:24]}",
                 knowledge_document_id=document.document_id,
                 source_type=f"knowledge_{file_type}",
                 chunk_index=index,
@@ -253,11 +300,13 @@ def invalidate_document_evidence(
     )
 
 
-def rebuild_index(db: DBSession) -> dict[str, Any]:
-    """Rebuild the single Chroma collection from enabled DB documents."""
+def rebuild_index(db: DBSession, *, owner_id: str) -> dict[str, Any]:
+    """Rebuild one teacher's private Chroma collection."""
+    collection_name = staged_knowledge_collection_name(owner_id)
     documents = (
         db.query(KnowledgeDocument)
         .filter(
+            KnowledgeDocument.owner_id == owner_id,
             KnowledgeDocument.deleted_at.is_(None),
             KnowledgeDocument.enabled.is_(True),
             or_(
@@ -317,12 +366,17 @@ def rebuild_index(db: DBSession) -> dict[str, Any]:
         chunks_by_document[document_id] += 1
 
     try:
-        with _INDEX_REBUILD_LOCK:
-            # Drop the process cache before replacing the persisted collection.
-            reset_retriever()
-            build_index(chunks, settings.chroma_persist_dir)
+        with _knowledge_index_lock(owner_id):
+            build_index(
+                chunks,
+                settings.chroma_persist_dir,
+                collection_name=collection_name,
+            )
+            activate_knowledge_collection(owner_id, collection_name)
+            reset_retriever(owner_id)
     except Exception as exc:
-        reset_retriever()
+        logger.exception("Knowledge index rebuild failed for owner %s", owner_id)
+        reset_retriever(owner_id)
         failed_at = _now()
         for document in documents:
             document.index_status = "failed"
@@ -338,7 +392,7 @@ def rebuild_index(db: DBSession) -> dict[str, Any]:
     indexed_at = _now()
     for document in documents:
         document.index_status = "ready"
-        document.index_namespace = "knowledge_base"
+        document.index_namespace = collection_name
         document.indexed_at = indexed_at
         document.metadata_json = {
             **(document.metadata_json or {}),
@@ -346,7 +400,7 @@ def rebuild_index(db: DBSession) -> dict[str, Any]:
         }
         document.updated_at = indexed_at
     db.commit()
-    reset_retriever()
+    reset_retriever(owner_id)
     return {
         "status": "ready",
         "indexed_document_ids": document_ids,

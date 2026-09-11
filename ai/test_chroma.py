@@ -1,10 +1,16 @@
 """验证 ChromaDB + 中文 embedding 检索精度"""
+import os
+
 from backend.config import settings
 from ai.rag.retriever import RAGRetriever
+from backend.services.knowledge_scope import knowledge_collection_name
 
 PERSIST_DIR = settings.chroma_persist_dir
+OWNER_ID = os.environ.get("KNOWLEDGE_OWNER_ID", "").strip()
+if not OWNER_ID:
+    raise SystemExit("请通过 KNOWLEDGE_OWNER_ID 指定要验证的教师账号")
 
-retriever = RAGRetriever(PERSIST_DIR)
+retriever = RAGRetriever(PERSIST_DIR, collection_name=knowledge_collection_name(OWNER_ID))
 
 # 5 个教学查询，覆盖不同教材
 TEST_QUERIES = [

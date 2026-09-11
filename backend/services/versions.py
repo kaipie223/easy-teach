@@ -20,6 +20,8 @@ from backend.schemas import (
     RevisionOperation,
     RevisionPatchInfo,
 )
+from backend.services.quality import inspect_courseware
+from backend.services.version_allocator import project_version_lock
 
 COLLECTIONS = {
     "slide": "slides",
@@ -107,10 +109,59 @@ def create_version(
     snapshot: CoursewarePlanSpec | dict[str, Any],
     base_version_id: str | None,
     summary: str,
+    generation_mode: str = "manual",
+    model_name: str | None = None,
+    prompt_version: str | None = None,
+    usage: dict[str, Any] | None = None,
+    expected_latest_version_id: str | None = None,
+) -> ArtifactVersion:
+    with project_version_lock(db, project.project_id):
+        if expected_latest_version_id is not None:
+            current = get_latest_version(db, project.project_id)
+            if current is None or current.artifact_version_id != expected_latest_version_id:
+                raise ApiError(
+                    "成果版本已变化，请基于最新版本重新生成",
+                    code="VERSION_CONFLICT",
+                    status_code=409,
+                    details={
+                        "expected": expected_latest_version_id,
+                        "current": current.artifact_version_id if current else None,
+                    },
+                )
+        return _create_version_locked(
+            db,
+            project,
+            user_id=user_id,
+            source_plan_id=source_plan_id,
+            snapshot=snapshot,
+            base_version_id=base_version_id,
+            summary=summary,
+            generation_mode=generation_mode,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            usage=usage,
+        )
+
+
+def _create_version_locked(
+    db: DBSession,
+    project: Project,
+    *,
+    user_id: str,
+    source_plan_id: str,
+    snapshot: CoursewarePlanSpec | dict[str, Any],
+    base_version_id: str | None,
+    summary: str,
+    generation_mode: str = "manual",
+    model_name: str | None = None,
+    prompt_version: str | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> ArtifactVersion:
     now = datetime.now(timezone.utc)
+    validated_snapshot = _validated_snapshot(snapshot)
+    quality_report = inspect_courseware(validated_snapshot)
     version = ArtifactVersion(
-        artifact_version_id=f"av_{__import__('uuid').uuid4().hex[:8]}",
+        artifact_version_id=f"av_{__import__('uuid').uuid4().hex[:24]}",
         user_id=user_id,
         project_id=project.project_id,
         source_plan_id=source_plan_id,
@@ -118,7 +169,13 @@ def create_version(
         version=_next_version_number(db, project.project_id),
         status="ready",
         summary=summary.strip() or "未命名成果版本",
-        snapshot_json=_validated_snapshot(snapshot),
+        snapshot_json=validated_snapshot,
+        generation_mode=generation_mode,
+        model_name=model_name,
+        prompt_version=prompt_version,
+        usage_json=usage or {},
+        quality_status=quality_report["status"],
+        quality_report=quality_report,
         created_at=now,
     )
     db.add(version)
@@ -135,29 +192,34 @@ def ensure_initial_version(
     *,
     user_id: str,
 ) -> ArtifactVersion:
-    existing = (
-        db.query(ArtifactVersion)
-        .filter(
-            ArtifactVersion.project_id == project.project_id,
-            ArtifactVersion.source_plan_id == plan.plan_id,
+    with project_version_lock(db, project.project_id):
+        existing = (
+            db.query(ArtifactVersion)
+            .filter(
+                ArtifactVersion.project_id == project.project_id,
+                ArtifactVersion.source_plan_id == plan.plan_id,
+            )
+            .order_by(ArtifactVersion.version.desc())
+            .first()
         )
-        .order_by(ArtifactVersion.version.desc())
-        .first()
-    )
-    if existing is not None:
-        project.current_version_id = existing.artifact_version_id
-        return existing
+        if existing is not None:
+            project.current_version_id = existing.artifact_version_id
+            return existing
 
-    current = get_latest_version(db, project.project_id)
-    return create_version(
-        db,
-        project,
-        user_id=user_id,
-        source_plan_id=plan.plan_id,
-        snapshot=plan.plan_json or {},
-        base_version_id=current.artifact_version_id if current else None,
-        summary=f"基于教学蓝图 v{plan.version} 创建成果版本",
-    )
+        current = get_latest_version(db, project.project_id)
+        return _create_version_locked(
+            db,
+            project,
+            user_id=user_id,
+            source_plan_id=plan.plan_id,
+            snapshot=plan.plan_json or {},
+            base_version_id=current.artifact_version_id if current else None,
+            summary=f"基于教学蓝图 v{plan.version} 创建成果版本",
+            generation_mode="initial",
+            model_name=plan.model_name,
+            prompt_version=plan.prompt_version,
+            usage=plan.usage_json or {},
+        )
 
 
 def to_version_info(version: ArtifactVersion) -> ArtifactVersionInfo:
@@ -171,6 +233,10 @@ def to_version_info(version: ArtifactVersion) -> ArtifactVersionInfo:
         status=version.status,
         summary=version.summary,
         snapshot=snapshot_spec(version),
+        generation_mode=version.generation_mode or "manual",
+        model_name=version.model_name,
+        prompt_version=version.prompt_version,
+        usage=version.usage_json or {},
         quality_status=version.quality_status or "pending",
         quality_report=version.quality_report,
         created_at=version.created_at,
@@ -451,7 +517,7 @@ def create_patch(
     summary: str,
 ) -> RevisionPatch:
     patch = RevisionPatch(
-        patch_id=f"patch_{__import__('uuid').uuid4().hex[:8]}",
+        patch_id=f"patch_{__import__('uuid').uuid4().hex[:24]}",
         user_id=user_id,
         project_id=project_id,
         base_version_id=base_version_id,
@@ -545,4 +611,5 @@ def restore_version(
         snapshot=snapshot_spec(target),
         base_version_id=current.artifact_version_id if current else None,
         summary=summary or f"从成果版本 v{target.version} 恢复",
+        generation_mode="restore",
     )

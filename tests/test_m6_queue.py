@@ -1,12 +1,13 @@
 """M6 durable queue lifecycle and deterministic quality checks."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from backend.db.database import Base
+from backend.models.material import Material, MaterialAnalysis
 from backend.models.session import Session
 from backend.models.task import Task
 from backend.services.orchestrator import Orchestrator
@@ -14,7 +15,9 @@ from backend.services.quality import inspect_courseware
 from backend.services.task_queue import (
     claim_task_attempt,
     enqueue_generation,
+    enqueue_material_analysis,
     prepare_task_retry,
+    recover_stale_jobs,
     touch_task,
 )
 
@@ -122,6 +125,83 @@ def test_enqueue_records_celery_id_without_replacing_request_session(monkeypatch
         )
         assert enqueue_generation(task.task_id, db=db) == "celery-m6-001"
         assert task.celery_task_id == "celery-m6-001"
+    finally:
+        db.close()
+
+
+def test_stale_pending_task_is_requeued(monkeypatch):
+    db = local_db()
+    session_factory = sessionmaker(autocommit=False, autoflush=False, bind=db.get_bind())
+    monkeypatch.setattr("backend.services.task_queue.SessionLocal", session_factory)
+    dispatched = []
+    monkeypatch.setattr(
+        "backend.services.task_queue.enqueue_generation",
+        lambda task_id, force=False: dispatched.append((task_id, force)) or task_id,
+    )
+    try:
+        task = new_task(db, task_id="task_stale_pending")
+        old = datetime.now(timezone.utc) - timedelta(hours=2)
+        task.created_at = old
+        task.updated_at = old
+        task.celery_task_id = "lost-worker-task"
+        db.commit()
+
+        result = recover_stale_jobs()
+
+        db.expire_all()
+        task = db.query(Task).filter(Task.task_id == task.task_id).one()
+        assert result["recovered"] == 1
+        assert task.status == "pending"
+        assert task.retry_count == 1
+        assert task.celery_task_id is None
+        assert dispatched == [("task_stale_pending", True)]
+    finally:
+        db.close()
+
+
+def test_enqueue_material_analysis_dispatches_video_parser(monkeypatch, tmp_path):
+    db = local_db()
+    try:
+        material = Material(
+            material_id="mat_video_queue",
+            owner_id="user_m6",
+            project_id=None,
+            original_name="lesson.mp4",
+            file_type="video",
+            mime_type="video/mp4",
+            stored_path=str(tmp_path / "lesson.mp4"),
+            size_bytes=24,
+            checksum_sha256="a" * 64,
+            status="uploaded",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        analysis = MaterialAnalysis(
+            analysis_id="analysis_video_queue",
+            material_id=material.material_id,
+            run_number=1,
+            parser_name="video-parser-model",
+            parser_version="0.3.0",
+            status="pending",
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add_all([material, analysis])
+        db.commit()
+        dispatched = []
+        monkeypatch.setattr(
+            "backend.services.task_queue._dispatch",
+            lambda name, entity_id: dispatched.append((name, entity_id))
+            or type("Result", (), {"id": "analysis_video_queue"})(),
+        )
+
+        assert enqueue_material_analysis(analysis.analysis_id, db=db) == analysis.analysis_id
+        db.expire_all()
+        material = db.query(Material).filter(Material.material_id == material.material_id).one()
+        analysis = db.query(MaterialAnalysis).filter(MaterialAnalysis.analysis_id == analysis.analysis_id).one()
+        assert dispatched == [("easy_teach.parse_material", "analysis_video_queue")]
+        assert material.status == "queued"
+        assert analysis.status == "pending"
     finally:
         db.close()
 

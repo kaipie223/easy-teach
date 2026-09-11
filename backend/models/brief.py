@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, Integer, JSON, String
+from sqlalchemy import Column, DateTime, Integer, JSON, String, UniqueConstraint
 
 from backend.db.database import Base
 from .session import gen_id
@@ -27,3 +27,8 @@ class TeachingBrief(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "version", name="uq_teaching_briefs_project_version"),
+        UniqueConstraint("session_id", "version", name="uq_teaching_briefs_session_version"),
+    )

@@ -83,8 +83,9 @@ async function submit() {
     } else {
       await auth.login({ email: form.email, password: form.password })
     }
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/'
-    await router.replace(redirect.startsWith('/') ? redirect : '/')
+    const roleHome = auth.user?.role === 'admin' ? '/admin' : '/'
+    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : roleHome
+    await router.replace(redirect.startsWith('/') ? redirect : roleHome)
   } catch (error) {
     if (error?.response) {
       errorMessage.value = error.response.data?.error?.message || '请求失败，请稍后重试'

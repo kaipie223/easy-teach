@@ -21,6 +21,9 @@ def inspect_courseware(snapshot: CoursewarePlanSpec | dict[str, Any]) -> dict[st
     Schema validation catches malformed values. These checks cover the
     cross-item invariants that are easy to break during local revisions.
     """
+    has_explicit_output_specs = isinstance(snapshot, CoursewarePlanSpec) or (
+        isinstance(snapshot, dict) and "output_specs" in snapshot
+    )
     try:
         spec = (
             snapshot
@@ -72,6 +75,29 @@ def inspect_courseware(snapshot: CoursewarePlanSpec | dict[str, Any]) -> dict[st
             errors.append(_issue("EMPTY_TITLE", "幻灯片标题不能为空", path=f"slides[{index}].title"))
         if not slide.bullets:
             warnings.append(_issue("EMPTY_BULLETS", "幻灯片没有要点内容", path=f"slides[{index}].bullets"))
+        if (
+            has_explicit_output_specs
+            and len(slide.bullets) > spec.output_specs.pptx.max_bullets_per_slide
+        ):
+            errors.append(
+                _issue(
+                    "PPTX_TOO_MANY_BULLETS",
+                    f"幻灯片要点超过 PPT 规范的 {spec.output_specs.pptx.max_bullets_per_slide} 条上限",
+                    path=f"slides[{index}].bullets",
+                )
+            )
+        if (
+            has_explicit_output_specs
+            and spec.output_specs.pptx.speaker_notes_required
+            and not slide.speaker_notes.strip()
+        ):
+            errors.append(
+                _issue(
+                    "PPTX_MISSING_SPEAKER_NOTES",
+                    "PPT 规范要求每页包含讲稿",
+                    path=f"slides[{index}].speaker_notes",
+                )
+            )
 
     for index, section in enumerate(spec.lesson_sections):
         if not section.title.strip() or not section.objective.strip():
@@ -105,6 +131,35 @@ def inspect_courseware(snapshot: CoursewarePlanSpec | dict[str, Any]) -> dict[st
     if not spec.evidence_refs:
         warnings.append(_issue("NO_EVIDENCE_REFS", "成果没有关联可回溯的证据来源", path="evidence_refs"))
 
+    docx_spec = spec.output_specs.docx
+    if not docx_spec.teacher_preparation:
+        warnings.append(_issue("DOCX_NO_PREPARATION", "教案缺少课前准备", path="output_specs.docx"))
+    if not docx_spec.differentiation:
+        warnings.append(_issue("DOCX_NO_DIFFERENTIATION", "教案缺少分层支持", path="output_specs.docx"))
+    if not docx_spec.homework.strip():
+        warnings.append(_issue("DOCX_NO_HOMEWORK", "教案缺少课后任务", path="output_specs.docx.homework"))
+    if not docx_spec.reflection_prompts:
+        warnings.append(_issue("DOCX_NO_REFLECTION", "教案缺少教学反思问题", path="output_specs.docx"))
+
+    pdf_spec = spec.output_specs.pdf
+    if not pdf_spec.printable_summary.strip():
+        warnings.append(_issue("PDF_NO_SUMMARY", "打印版缺少课程摘要", path="output_specs.pdf"))
+    if not pdf_spec.assessment_checklist:
+        warnings.append(_issue("PDF_NO_CHECKLIST", "打印版缺少评价清单", path="output_specs.pdf"))
+
+    valid_interaction_ids = {item.interaction_id for item in spec.interactions}
+    html_ids = spec.output_specs.html.interaction_ids
+    if not html_ids:
+        warnings.append(_issue("HTML_NO_INTERACTIONS", "互动网页未指定互动内容", path="output_specs.html"))
+    elif not set(html_ids).issubset(valid_interaction_ids):
+        errors.append(
+            _issue(
+                "HTML_UNKNOWN_INTERACTION",
+                "互动网页引用了蓝图中不存在的互动 ID",
+                path="output_specs.html.interaction_ids",
+            )
+        )
+
     status = "failed" if errors else "warning" if warnings else "passed"
     return {
         "status": status,
@@ -117,6 +172,8 @@ def inspect_courseware(snapshot: CoursewarePlanSpec | dict[str, Any]) -> dict[st
             "interaction_count": len(spec.interactions),
             "evidence_ref_count": len(spec.evidence_refs),
             "lesson_duration_minutes": section_minutes,
+            "pptx_max_bullets": spec.output_specs.pptx.max_bullets_per_slide,
+            "html_interaction_count": len(html_ids),
         },
     }
 

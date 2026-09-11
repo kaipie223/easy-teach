@@ -39,7 +39,6 @@ services:
     command: ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn backend.main:app --host 0.0.0.0 --port 8000"]
     volumes:
       - app_data:/app/data
-      - ./knowledge-base:/app/knowledge-base:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,7 +59,6 @@ services:
     command: ["uv", "run", "celery", "-A", "backend.celery_app.celery_app", "worker", "--beat", "--loglevel=INFO", "--concurrency=2"]
     volumes:
       - app_data:/app/data
-      - ./knowledge-base:/app/knowledge-base:ro
     depends_on:
       api:
         condition: service_started

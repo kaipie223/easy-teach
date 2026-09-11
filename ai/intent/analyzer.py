@@ -10,6 +10,7 @@ from ai.intent.state import IntentStateMachine, State
 
 
 PROMPT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts")
+MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 
 def _parse_knowledge_points(raw_kps: list[dict]) -> list[KnowledgePoint]:
@@ -160,10 +161,11 @@ class IntentAnalyzer:
     def _call_llm_analyze(self, history_text: str) -> dict:
         prompt = self.prompt_extract.replace("{messages}", history_text)
         resp = self.client.chat.completions.create(
-            model="deepseek-chat",
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1000,
             response_format={"type": "json_object"},
+            extra_body={"thinking": {"type": "disabled"}},
             timeout=30,
         )
         return _extract_json(resp.choices[0].message.content)
@@ -182,10 +184,11 @@ class IntentAnalyzer:
                   .replace("{missing_info}", json.dumps(missing, ensure_ascii=False)))
 
         resp = self.client.chat.completions.create(
-            model="deepseek-chat",
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
             response_format={"type": "json_object"},
+            extra_body={"thinking": {"type": "disabled"}},
             timeout=30,
         )
         return _extract_json(resp.choices[0].message.content)
@@ -195,10 +198,11 @@ class IntentAnalyzer:
         prompt = self.prompt_confirm.replace("{intent_json}", intent_json)
 
         resp = self.client.chat.completions.create(
-            model="deepseek-chat",
+            model=MODEL_NAME,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=500,
             response_format={"type": "json_object"},
+            extra_body={"thinking": {"type": "disabled"}},
             timeout=30,
         )
         return _extract_json(resp.choices[0].message.content)

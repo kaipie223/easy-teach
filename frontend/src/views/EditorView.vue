@@ -71,40 +71,64 @@
         <div class="section-header">
           <div>
             <h2>局部修改</h2>
-            <p>先预览受影响对象，再创建新版本；当前本地解释器支持页面标题、简化、扩写、案例、删除和移动。</p>
+            <p>可以让 AI 只重写一个目标，也可以使用确定性的结构化修改；两种方式都会创建新版本。</p>
           </div>
           <el-tag v-if="currentVersion" effect="plain">基于 v{{ currentVersion.version }}</el-tag>
         </div>
-        <label class="field-label" for="revision-instruction">修改意见</label>
-        <el-input
-          id="revision-instruction"
-          v-model="revisionInstruction"
-          type="textarea"
-          :rows="3"
-          maxlength="2000"
-          show-word-limit
-          placeholder="例如：简化第 3 页"
-          :disabled="!currentVersion || submitting"
-        />
-        <div class="revision-actions">
-          <el-button
-            type="primary"
-            :loading="interpreting"
-            :disabled="!currentVersion || !revisionInstruction.trim() || submitting"
-            @click="previewRevision"
-          >
-            预览修改
-          </el-button>
-          <el-button v-if="patch" :loading="submitting" @click="applyCurrentPatch">
-            应用并创建新版本
-          </el-button>
-        </div>
-        <el-alert v-if="patch" class="patch-preview" type="info" show-icon :closable="false">
-          <template #title>{{ patch.summary }}</template>
-          <div>目标：{{ patch.target_ids.join('、') || '未指定' }}</div>
-          <div v-if="patch.cascade_check.length">需要同步检查：{{ patch.cascade_check.join('、') }}</div>
-          <div v-if="patch.requires_confirmation">该修改影响范围较大，应用时会再次确认。</div>
-        </el-alert>
+        <el-tabs v-model="revisionMode">
+          <el-tab-pane label="AI 局部重生成" name="ai">
+            <div class="ai-revision-form">
+              <div class="target-selectors">
+                <el-segmented v-model="aiTargetType" :options="targetTypeOptions" />
+                <el-select v-model="aiTargetId" placeholder="选择修改目标" filterable>
+                  <el-option v-for="item in targetOptions" :key="item.value" :label="item.label" :value="item.value" />
+                </el-select>
+              </div>
+              <label class="field-label" for="ai-revision-instruction">重生成要求</label>
+              <el-input
+                id="ai-revision-instruction"
+                v-model="aiInstruction"
+                type="textarea"
+                :rows="3"
+                maxlength="2000"
+                show-word-limit
+                placeholder="例如：改成更适合初二学生的实验探究表达，补充具体追问和易错点"
+                :disabled="!currentVersion || regenerating"
+              />
+              <div class="revision-actions">
+                <el-button type="primary" :loading="regenerating" :disabled="!canRegenerate" @click="regenerateTarget">
+                  <el-icon><MagicStick /></el-icon>
+                  AI 重生成并创建版本
+                </el-button>
+              </div>
+            </div>
+          </el-tab-pane>
+          <el-tab-pane label="结构化修改" name="manual">
+            <div class="manual-revision-form">
+              <label class="field-label" for="revision-instruction">修改意见</label>
+              <el-input
+                id="revision-instruction"
+                v-model="revisionInstruction"
+                type="textarea"
+                :rows="3"
+                maxlength="2000"
+                show-word-limit
+                placeholder="例如：简化第 3 页"
+                :disabled="!currentVersion || submitting"
+              />
+              <div class="revision-actions">
+                <el-button type="primary" :loading="interpreting" :disabled="!currentVersion || !revisionInstruction.trim() || submitting" @click="previewRevision">预览修改</el-button>
+                <el-button v-if="patch" :loading="submitting" @click="applyCurrentPatch">应用并创建新版本</el-button>
+              </div>
+              <el-alert v-if="patch" class="patch-preview" type="info" show-icon :closable="false">
+                <template #title>{{ patch.summary }}</template>
+                <div>目标：{{ patch.target_ids.join('、') || '未指定' }}</div>
+                <div v-if="patch.cascade_check.length">需要同步检查：{{ patch.cascade_check.join('、') }}</div>
+                <div v-if="patch.requires_confirmation">该修改影响范围较大，应用时会再次确认。</div>
+              </el-alert>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
       </section>
 
       <section v-if="versions.length" class="section-card">
@@ -119,12 +143,14 @@
             <div class="version-main">
               <div class="version-heading">
                 <strong>v{{ version.version }}</strong>
+                <el-tag size="small" effect="plain">{{ generationModeLabel(version.generation_mode) }}</el-tag>
                 <el-tag v-if="version.artifact_version_id === currentVersion?.artifact_version_id" type="success" size="small">
                   当前版本
                 </el-tag>
               </div>
               <span>{{ version.summary }}</span>
               <small>{{ formatDate(version.created_at) }} · 来源蓝图 {{ version.source_plan_id }}</small>
+              <small v-if="version.model_name">{{ version.model_name }} · {{ version.prompt_version }}</small>
             </div>
             <div class="version-actions">
               <el-button plain @click="exportVersion(version)">导出此版本</el-button>
@@ -148,22 +174,26 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Download, Refresh } from '@element-plus/icons-vue'
+import { Download, MagicStick, Refresh } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   applyRevision,
   downloadFile,
   fetchArtifactVersions,
+  getApiErrorMessage,
   getTaskStatus,
   interpretRevision,
+  regenerateArtifactTarget,
   restoreArtifactVersion,
 } from '@/api'
+import { useProjectStore } from '@/stores/project'
 
 const route = useRoute()
 const router = useRouter()
-const projectId = computed(() => String(route.query.projectId || localStorage.getItem('active_project_id') || ''))
+const projectStore = useProjectStore()
+const projectId = computed(() => projectStore.activeProjectId)
 const task = ref(null)
 const versions = ref([])
 const patch = ref(null)
@@ -172,6 +202,11 @@ const loading = ref(false)
 const interpreting = ref(false)
 const submitting = ref(false)
 const errorMessage = ref('')
+const revisionMode = ref('ai')
+const aiTargetType = ref('slide')
+const aiTargetId = ref('')
+const aiInstruction = ref('')
+const regenerating = ref(false)
 let pollTimer = null
 
 const currentVersion = computed(() => versions.value[0] || null)
@@ -182,9 +217,28 @@ const statusLabel = computed(() => ({
   failed: '失败',
 }[task.value?.status] || '未知'))
 const statusClass = computed(() => task.value?.status === 'completed' ? 'success-text' : 'muted')
+const targetTypeOptions = [
+  { label: 'PPT 页面', value: 'slide' },
+  { label: '教案章节', value: 'lesson_section' },
+  { label: '互动题', value: 'interaction' },
+]
+const targetOptions = computed(() => {
+  const snapshot = currentVersion.value?.snapshot
+  if (!snapshot) return []
+  if (aiTargetType.value === 'slide') return (snapshot.slides || []).map(item => ({ value: item.slide_id, label: `第 ${item.order} 页 · ${item.title}` }))
+  if (aiTargetType.value === 'lesson_section') return (snapshot.lesson_sections || []).map(item => ({ value: item.section_id, label: `${item.order}. ${item.title}` }))
+  return (snapshot.interactions || []).map(item => ({ value: item.interaction_id, label: item.title }))
+})
+const canRegenerate = computed(() => Boolean(
+  currentVersion.value && aiTargetId.value && aiInstruction.value.trim() && !regenerating.value,
+))
 
 function outputDescription(type) {
-  return { pptx: '演示文稿', docx: '教学教案', html: '互动练习' }[type] || '生成文件'
+  return { pptx: '演示文稿', docx: '教学教案', pdf: '打印版', html: '互动练习' }[type] || '生成文件'
+}
+
+function generationModeLabel(mode) {
+  return { initial: '初始版本', manual: '人工修改', ai: 'AI 重生成', restore: '恢复版本' }[mode] || '人工修改'
 }
 
 function formatDate(value) {
@@ -279,6 +333,27 @@ async function applyCurrentPatch() {
   }
 }
 
+async function regenerateTarget() {
+  if (!canRegenerate.value) return
+  regenerating.value = true
+  errorMessage.value = ''
+  try {
+    const created = (await regenerateArtifactTarget(projectId.value, {
+      base_version_id: currentVersion.value.artifact_version_id,
+      target_type: aiTargetType.value,
+      target_id: aiTargetId.value,
+      instruction: aiInstruction.value.trim(),
+    })).data
+    aiInstruction.value = ''
+    await loadVersions()
+    ElMessage.success(`AI 已重生成目标并创建成果版本 v${created.version}`)
+  } catch (error) {
+    errorMessage.value = error.response?.data?.error?.message || 'AI 局部重生成失败，原版本仍然保留'
+  } finally {
+    regenerating.value = false
+  }
+}
+
 async function restore(version) {
   try {
     await ElMessageBox.confirm(
@@ -310,9 +385,9 @@ async function downloadOutput(output) {
     link.href = url
     link.download = output.file_name
     link.click()
-    window.URL.revokeObjectURL(url)
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000)
   } catch (error) {
-    errorMessage.value = error.response?.data?.error?.message || '文件下载失败，请稍后重试'
+    errorMessage.value = await getApiErrorMessage(error, '文件下载失败，请稍后重试')
   }
 }
 
@@ -320,7 +395,7 @@ function openExports(version = currentVersion.value) {
   if (!version) return
   router.push({
     path: '/exports',
-    query: { projectId: projectId.value, artifactVersionId: version.artifact_version_id, taskId: route.query.taskId },
+    query: { artifactVersionId: version.artifact_version_id, taskId: route.query.taskId },
   })
 }
 
@@ -329,6 +404,11 @@ function exportVersion(version) {
 }
 
 onMounted(loadWorkspace)
+watch([currentVersion, aiTargetType], () => {
+  if (!targetOptions.value.some(item => item.value === aiTargetId.value)) {
+    aiTargetId.value = targetOptions.value[0]?.value || ''
+  }
+}, { immediate: true })
 onBeforeUnmount(() => {
   if (pollTimer) window.clearTimeout(pollTimer)
 })
@@ -365,6 +445,8 @@ onBeforeUnmount(() => {
 .success-text { color: #16834b; }
 
 .revision-section { display: grid; gap: 14px; }
+.ai-revision-form, .manual-revision-form { display: grid; gap: 14px; }
+.target-selectors { display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: 12px; align-items: center; }
 
 .field-label {
   color: #334155;
@@ -427,5 +509,6 @@ onBeforeUnmount(() => {
   .version-row { grid-template-columns: 1fr; }
   .output-item { grid-template-columns: 44px minmax(0, 1fr); }
   .output-item .el-button { grid-column: 2; justify-self: start; }
+  .target-selectors { grid-template-columns: 1fr; }
 }
 </style>

@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 
 from backend.db.database import Base
 from .session import gen_id
@@ -29,6 +29,10 @@ class CoursewarePlan(Base):
     duration_minutes = Column(Integer, nullable=False)
     plan_json = Column(JSON, nullable=False, default=dict)
     source_refs = Column(JSON, nullable=False, default=list)
+    generation_mode = Column(String(16), nullable=False, default="template", index=True)
+    model_name = Column(String(128), nullable=True)
+    prompt_version = Column(String(64), nullable=True)
+    usage_json = Column(JSON, nullable=False, default=dict)
     notes = Column(Text, nullable=False, default="")
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
@@ -38,5 +42,5 @@ class CoursewarePlan(Base):
     )
 
     __table_args__ = (
-        Index("ix_courseware_plans_project_version", "project_id", "version"),
+        UniqueConstraint("project_id", "version", name="uq_courseware_plans_project_version"),
     )

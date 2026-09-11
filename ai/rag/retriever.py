@@ -1,11 +1,10 @@
 """RAGRetriever - hybrid search: vector (0.7) + keyword (0.3)"""
 
 import chromadb
-from chromadb.utils import embedding_functions
+
+from ai.rag.embedding import FastEmbedEmbeddingFunction
 from backend.config import normalize_chroma_path
 from backend.schemas import RAGDocument
-
-EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
 
 
 def _is_chinese(ch):
@@ -41,7 +40,7 @@ def _keyword_score(query, content):
 
 class RAGRetriever:
 
-    def __init__(self, chroma_persist_dir, collection_name="knowledge_base", vector_weight=0.7):
+    def __init__(self, chroma_persist_dir, collection_name, vector_weight=0.7):
         persist_path = normalize_chroma_path(chroma_persist_dir)
         if not persist_path.is_dir():
             raise FileNotFoundError(f"ChromaDB dir not found: {persist_path}")
@@ -53,11 +52,9 @@ class RAGRetriever:
         names = [item.name if hasattr(item, "name") else str(item) for item in collection_names]
         if collection_name not in names:
             raise FileNotFoundError(
-                f"Chroma collection not found: {collection_name}; run `uv run python -m ai.build_kb`"
+                f"Chroma collection not found: {collection_name}; build it from 我的知识库"
             )
-        self.ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=EMBEDDING_MODEL,
-        )
+        self.ef = FastEmbedEmbeddingFunction()
         self.collection = self.client.get_collection(
             collection_name, embedding_function=self.ef,
         )

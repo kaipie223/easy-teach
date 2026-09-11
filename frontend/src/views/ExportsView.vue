@@ -33,7 +33,7 @@
         </el-select>
         <div class="export-actions">
           <el-button type="primary" :loading="exporting" @click="createExports">
-            导出 PPT、教案和互动内容
+            导出 PPT、Word、PDF 和互动内容
           </el-button>
           <el-button plain @click="openEditor">返回成果编辑</el-button>
         </div>
@@ -66,7 +66,7 @@
               <el-icon><Download /></el-icon>
               下载
             </el-button>
-            <el-button v-else-if="item.status === 'failed'" plain @click="createExports(true)">
+            <el-button v-else-if="item.status === 'failed'" plain @click="retryExport(item)">
               重试导出
             </el-button>
           </article>
@@ -88,11 +88,14 @@ import {
   downloadExport,
   fetchArtifactVersions,
   fetchProjectExports,
+  getApiErrorMessage,
 } from '@/api'
+import { useProjectStore } from '@/stores/project'
 
 const route = useRoute()
 const router = useRouter()
-const projectId = computed(() => String(route.query.projectId || localStorage.getItem('active_project_id') || ''))
+const projectStore = useProjectStore()
+const projectId = computed(() => projectStore.activeProjectId)
 const versions = ref([])
 const selectedVersionId = ref(String(route.query.artifactVersionId || ''))
 const exports = ref([])
@@ -112,7 +115,7 @@ function statusType(status) {
 }
 
 function formatLabel(format) {
-  return { pptx: 'PPTX 演示文稿', docx: 'DOCX 教案', html: 'HTML5 互动内容' }[format] || format.toUpperCase()
+  return { pptx: 'PPTX 演示文稿', docx: 'DOCX 教案', pdf: 'PDF 教案', html: 'HTML5 互动内容' }[format] || format.toUpperCase()
 }
 
 async function loadVersions() {
@@ -171,6 +174,21 @@ async function createExports(force = false) {
   }
 }
 
+async function retryExport(item) {
+  if (exporting.value) return
+  exporting.value = true
+  errorMessage.value = ''
+  try {
+    await createVersionExports(projectId.value, selectedVersionId.value, [item.format], true)
+    await loadExports()
+    ElMessage.success(`已重新创建 ${formatLabel(item.format)} 导出任务`)
+  } catch (error) {
+    errorMessage.value = await getApiErrorMessage(error, '导出任务重试失败')
+  } finally {
+    exporting.value = false
+  }
+}
+
 async function download(item) {
   try {
     const response = await downloadExport(item.export_id)
@@ -179,14 +197,14 @@ async function download(item) {
     link.href = url
     link.download = item.file_name || `${item.format}-export`
     link.click()
-    window.URL.revokeObjectURL(url)
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 60_000)
   } catch (error) {
-    errorMessage.value = error.response?.data?.error?.message || '下载失败，请稍后重试'
+    errorMessage.value = await getApiErrorMessage(error, '下载失败，请稍后重试')
   }
 }
 
 function openEditor() {
-  router.push({ path: '/editor', query: { projectId: projectId.value, artifactVersionId: selectedVersionId.value } })
+  router.push({ path: '/editor', query: { artifactVersionId: selectedVersionId.value } })
 }
 
 onMounted(loadWorkspace)

@@ -79,5 +79,5 @@ easy-teach-dev/
 │       └── stores/      # Pinia 状态管理
 ├── alembic/             # 数据库迁移
 ├── tests/               # API 和契约测试
-└── knowledge-base/      # 本地知识库资料目录
+└── data/knowledge/      # 按教师账号隔离的知识库文件（运行时生成）
 ```

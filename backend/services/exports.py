@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,21 +13,33 @@ from backend.config import settings
 from backend.core.errors import ApiError
 from backend.models.file import FileRecord
 from backend.models.project import Project
-from backend.models.session import Session
+from backend.models.session import Session, gen_id
 from backend.models.versioning import ArtifactVersion, ExportRecord
 from backend.schemas import ExportFormat, ExportInfo
-from backend.services.generator import generate_docx, generate_html, generate_pptx
+from backend.services.generator import generate_docx, generate_html, generate_pdf, generate_pptx
+from backend.services.limits import ensure_storage_capacity, ensure_task_capacity
+from backend.services.uploads import checksum_file, remove_managed_file
 from backend.services.task_queue import claim_export_attempt, touch_export, utcnow
 from backend.services.versions import snapshot_spec
 
 
 def _safe_title(title: str) -> str:
     cleaned = re.sub(r"[^\w\u4e00-\u9fff-]+", "_", title.strip(), flags=re.UNICODE)
-    return cleaned.strip("_")[:80] or "教学课程"
+    value = cleaned.strip("_") or "教学课程"
+    # ext4 limits a file-name component to 255 bytes. Keep ample room for the
+    # version/date/export suffix even when the title consists entirely of
+    # three-byte CJK characters.
+    encoded = value.encode("utf-8")[:120]
+    while encoded:
+        try:
+            return encoded.decode("utf-8").rstrip("_") or "教学课程"
+        except UnicodeDecodeError:
+            encoded = encoded[:-1]
+    return "教学课程"
 
 
 def _format_extension(export_format: str) -> str:
-    return {"pptx": "pptx", "docx": "docx", "html": "html"}[export_format]
+    return {"pptx": "pptx", "docx": "docx", "pdf": "pdf", "html": "html"}[export_format]
 
 
 def export_file_name(version: ArtifactVersion, export_format: str, export_id: str) -> str:
@@ -89,6 +100,8 @@ def create_export_records(
                 records.append(existing)
                 continue
 
+        ensure_task_capacity(db, user_id)
+
         record = ExportRecord(
             user_id=user_id,
             project_id=project.project_id,
@@ -123,6 +136,8 @@ def _render(version: ArtifactVersion, export_format: str, output_name: str) -> s
         return _sync(generate_pptx(plan, output_name=output_name))
     if export_format == "docx":
         return _sync(generate_docx(plan, output_name=output_name))
+    if export_format == "pdf":
+        return _sync(generate_pdf(plan, output_name=output_name))
     if export_format == "html":
         return _sync(generate_html(plan, output_name=output_name))
     raise ApiError(
@@ -163,11 +178,17 @@ def run_export(export_id: str, *, raise_errors: bool = False) -> None:
         output_name = export_file_name(version, record.format, record.export_id)
         path = Path(_render(version, record.format, output_name))
         touch_export(db, record)
-        content = path.read_bytes()
-        checksum = hashlib.sha256(content).hexdigest()
-        file_id = path.stem
+        checksum, size_bytes = checksum_file(path)
+        # ``exports.file_id`` is VARCHAR(40). A human-readable filename can be
+        # much longer and must never double as a database identifier.
+        file_id = gen_id("f")
         existing_file = db.query(FileRecord).filter(FileRecord.file_id == file_id).first()
         if existing_file is None:
+            try:
+                ensure_storage_capacity(db, record.user_id, size_bytes)
+            except Exception:
+                remove_managed_file(path, root=settings.output_dir)
+                raise
             db.add(
                 FileRecord(
                     file_id=file_id,
@@ -187,7 +208,7 @@ def run_export(export_id: str, *, raise_errors: bool = False) -> None:
         record.path = str(path)
         record.file_name = path.name
         record.checksum_sha256 = checksum
-        record.size_bytes = len(content)
+        record.size_bytes = size_bytes
         record.status = "completed"
         record.completed_at = datetime.now(timezone.utc)
         record.updated_at = record.completed_at

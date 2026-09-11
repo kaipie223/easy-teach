@@ -7,7 +7,9 @@ from datetime import datetime, timezone
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
+from backend.models.project import Project
 from backend.models.session import ChatMessage, Session
+from backend.services.intent import IntentServiceError
 from backend.services.orchestrator import get_orchestrator
 
 logger = logging.getLogger(__name__)
@@ -17,6 +19,8 @@ async def create_chat_stream(
     session: Session,
     message: str,
     db: DBSession,
+    *,
+    persist_user_message: bool = True,
 ) -> StreamingResponse:
     previous_messages = (
         db.query(ChatMessage)
@@ -24,24 +28,35 @@ async def create_chat_stream(
         .order_by(ChatMessage.created_at.asc(), ChatMessage.id.asc())
         .all()
     )
-    history = [{"role": item.role, "content": item.content} for item in previous_messages]
-    history.append({"role": "user", "content": message})
+    history = [
+        {"role": item.role, "content": item.content}
+        for item in previous_messages
+        if not (item.event_data or {}).get("bootstrap") and item.msg_type != "error"
+    ]
+    if persist_user_message:
+        history.append({"role": "user", "content": message})
     session_user_id = session.user_id
     session_project_id = session.project_id
     session_key = session.session_id
 
-    db.add(
-        ChatMessage(
-            user_id=session_user_id,
-            project_id=session_project_id,
-            session_id=session_key,
-            role="user",
-            content=message,
-            msg_type="text",
-            created_at=datetime.now(timezone.utc),
+    if persist_user_message:
+        now = datetime.now(timezone.utc)
+        db.add(
+            ChatMessage(
+                user_id=session_user_id,
+                project_id=session_project_id,
+                session_id=session_key,
+                role="user",
+                content=message,
+                msg_type="text",
+                created_at=now,
+            )
         )
-    )
-    db.commit()
+        if session_project_id:
+            project = db.query(Project).filter(Project.project_id == session_project_id).first()
+            if project is not None:
+                project.updated_at = now
+        db.commit()
 
     orchestrator = get_orchestrator()
 
@@ -80,6 +95,30 @@ async def create_chat_stream(
                 db.commit()
                 data = event.model_dump_json()
                 yield f"event: {event.event_type.value}\ndata: {data}\n\n"
+        except IntentServiceError as exc:
+            error_event = {
+                "event_type": "error",
+                "content": str(exc),
+                "data": {
+                    "code": exc.code,
+                    "recoverable": exc.recoverable,
+                    "suggested_action": exc.suggested_action,
+                },
+            }
+            db.add(
+                ChatMessage(
+                    user_id=session_user_id,
+                    project_id=session_project_id,
+                    session_id=session_key,
+                    role="assistant",
+                    content=str(exc),
+                    msg_type="error",
+                    event_data=error_event["data"],
+                    created_at=datetime.now(timezone.utc),
+                )
+            )
+            db.commit()
+            yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
         except Exception:
             logger.exception("SSE chat stream error")
             error_content = "抱歉，处理您的消息时出错了，请重试。"
@@ -90,14 +129,26 @@ async def create_chat_stream(
                     session_id=session_key,
                     role="assistant",
                     content=error_content,
-                    msg_type="text",
-                    event_data=None,
+                    msg_type="error",
+                    event_data={
+                        "code": "CHAT_PROCESSING_FAILED",
+                        "recoverable": True,
+                        "suggested_action": "请重试",
+                    },
                     created_at=datetime.now(timezone.utc),
                 )
             )
             db.commit()
-            error_event = {"event_type": "text", "content": error_content, "data": None}
-            yield f"event: text\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+            error_event = {
+                "event_type": "error",
+                "content": error_content,
+                "data": {
+                    "code": "CHAT_PROCESSING_FAILED",
+                    "recoverable": True,
+                    "suggested_action": "请重试",
+                },
+            }
+            yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_stream(),

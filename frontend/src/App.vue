@@ -27,6 +27,12 @@ const route = useRoute()
 body {
   margin: 0;
   min-width: 320px;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
 }
 
 button,

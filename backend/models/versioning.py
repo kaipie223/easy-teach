@@ -2,7 +2,18 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    JSON,
+    String,
+    Text,
+    UniqueConstraint,
+)
 
 from backend.db.database import Base
 from .session import gen_id
@@ -31,12 +42,16 @@ class ArtifactVersion(Base):
     status = Column(String(32), nullable=False, default="ready", index=True)
     summary = Column(Text, nullable=False, default="")
     snapshot_json = Column(JSON, nullable=False, default=dict)
+    generation_mode = Column(String(16), nullable=False, default="manual", index=True)
+    model_name = Column(String(128), nullable=True)
+    prompt_version = Column(String(64), nullable=True)
+    usage_json = Column(JSON, nullable=False, default=dict)
     quality_status = Column(String(32), nullable=False, default="pending")
     quality_report = Column(JSON, nullable=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
-        Index("ix_artifact_versions_project_version", "project_id", "version"),
+        UniqueConstraint("project_id", "version", name="uq_artifact_versions_project_version"),
     )
 
 

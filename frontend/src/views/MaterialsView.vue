@@ -5,22 +5,9 @@
         <h1>资料中心</h1>
         <p>上传参考资料，查看解析状态，并将证据片段绑定到教学生成流程。</p>
       </div>
-      <div v-if="projects.length" class="project-selector">
-        <label for="materials-project">当前项目</label>
-        <el-select
-          id="materials-project"
-          v-model="selectedProjectId"
-          class="project-select"
-          filterable
-          @change="handleProjectChange"
-        >
-          <el-option
-            v-for="project in projects"
-            :key="project.project_id"
-            :label="project.title"
-            :value="project.project_id"
-          />
-        </el-select>
+      <div v-if="selectedProject" class="project-context-display">
+        <span>当前项目</span>
+        <strong>{{ selectedProject.title }}</strong>
       </div>
     </header>
 
@@ -39,10 +26,9 @@
       </template>
     </el-alert>
 
-    <el-empty v-if="!loadingProjects && !projects.length" description="还没有可用项目">
-      <el-button type="primary" @click="go('/home')">
-        <el-icon><Plus /></el-icon>
-        创建项目
+    <el-empty v-if="!loadingProjects && !selectedProjectId" description="请先从工作台选择一个项目">
+      <el-button type="primary" @click="go('/')">
+        返回工作台
       </el-button>
     </el-empty>
 
@@ -51,7 +37,7 @@
         <div class="section-header">
           <div>
             <h2>上传参考资料</h2>
-            <p>PDF、Word、PPT 和图片会在上传后解析；视频暂在后续阶段启用。</p>
+            <p>PDF、Word 和 PPT 会提取证据；图片仅保存原文件，视觉与视频解析暂未启用。</p>
           </div>
           <el-button :loading="loadingMaterials" text @click="loadCurrentProject">
             <el-icon><Refresh /></el-icon>
@@ -74,7 +60,7 @@
           ref="fileInput"
           class="visually-hidden"
           type="file"
-          accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.gif,.bmp,.webp,.mp4,.avi,.mov,.mkv"
+          accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.gif,.bmp,.webp"
           @change="handleFileChange"
         />
         <div
@@ -89,8 +75,8 @@
         >
           <el-icon :size="28"><UploadFilled /></el-icon>
           <div>
-            <strong>{{ uploading ? '正在上传并解析资料' : '选择要上传的资料' }}</strong>
-            <span>单文件不超过 50 MB，图片不超过 15 MB</span>
+            <strong>{{ uploading ? '正在上传资料' : '选择要上传的资料' }}</strong>
+            <span>单文件不超过 50 MB；当前支持 PDF、Word、PPT 和图片原文件</span>
           </div>
           <el-button type="primary" :loading="uploading" :disabled="!selectedProjectId">
             <el-icon><FolderOpened /></el-icon>
@@ -164,7 +150,7 @@
                     />
                   </div>
                   <span :class="['status-pill', materialStatusClass(material.status)]">
-                    {{ materialStatusLabel(material.status) }}
+                    {{ materialStatusLabel(material.status, material.file_type) }}
                   </span>
                 </td>
                 <td>
@@ -233,7 +219,7 @@
           <span class="section-context">{{ evidenceSnips.length }} 条有效证据</span>
         </div>
         <el-empty v-if="!evidenceSnips.length" description="解析完成后，证据片段会显示在这里" />
-        <div v-else class="evidence-grid">
+        <div v-else class="evidence-list">
           <article v-for="evidence in evidenceSnips" :key="evidence.evidence_id" class="evidence-card">
             <div class="evidence-meta">
               <strong>{{ evidence.materialName }}</strong>
@@ -264,7 +250,7 @@
           <div>
             <span>解析状态</span>
             <strong :class="['status-pill', materialStatusClass(selectedMaterial.status)]">
-              {{ materialStatusLabel(selectedMaterial.status) }}
+              {{ materialStatusLabel(selectedMaterial.status, selectedMaterial.file_type) }}
             </strong>
           </div>
           <div>
@@ -309,15 +295,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Delete,
   Document,
   Download,
   FolderOpened,
-  Plus,
   Refresh,
   UploadFilled,
   View,
@@ -329,18 +314,16 @@ import {
   fetchMaterialBindings,
   fetchMaterialEvidence,
   fetchProjectMaterials,
-  fetchProjects,
   replaceMaterialBindings,
   uploadProjectMaterial,
 } from '@/api'
 import { useSessionStore } from '@/stores/session'
+import { useProjectStore } from '@/stores/project'
 
-const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
+const projectStore = useProjectStore()
 
-const projects = ref([])
-const selectedProjectId = ref('')
 const materials = ref([])
 const loadingProjects = ref(true)
 const loadingMaterials = ref(false)
@@ -352,6 +335,8 @@ const uploadNote = ref('')
 const fileInput = ref(null)
 const detailsVisible = ref(false)
 const selectedMaterial = ref(null)
+const pollTimer = ref(null)
+const isUnmounted = ref(false)
 
 const usageOptions = [
   { value: 'content_basis', label: '内容依据' },
@@ -369,9 +354,8 @@ const targetOptions = [
   { value: 'lesson_section', label: '教案章节' },
 ]
 
-const selectedProject = computed(() =>
-  projects.value.find(project => project.project_id === selectedProjectId.value) || null,
-)
+const selectedProjectId = computed(() => projectStore.activeProjectId)
+const selectedProject = computed(() => projectStore.activeProject)
 
 const evidenceSnips = computed(() =>
   materials.value.flatMap(material =>
@@ -383,30 +367,17 @@ const evidenceSnips = computed(() =>
   ),
 )
 
-watch(
-  () => route.query.projectId,
-  async (projectId) => {
-    if (typeof projectId === 'string' && projectId !== selectedProjectId.value) {
-      selectedProjectId.value = projectId
-      await loadCurrentProject()
-    }
-  },
-)
+onMounted(loadProjectContext)
+onBeforeUnmount(() => {
+  isUnmounted.value = true
+  clearMaterialPolling()
+})
 
-onMounted(loadProjects)
-
-async function loadProjects() {
+async function loadProjectContext() {
   loadingProjects.value = true
   pageError.value = ''
   try {
-    const response = await fetchProjects(false)
-    projects.value = response.data || []
-    const routeProjectId = typeof route.query.projectId === 'string' ? route.query.projectId : ''
-    const sessionProjectId = sessionStore.projectId?.value || sessionStore.projectId || ''
-    const candidate = routeProjectId || sessionProjectId
-    selectedProjectId.value = projects.value.some(item => item.project_id === candidate)
-      ? candidate
-      : projects.value[0]?.project_id || ''
+    await projectStore.ensureActiveProject()
     await loadCurrentProject()
   } catch (error) {
     pageError.value = apiErrorMessage(error, '项目加载失败，请重试')
@@ -415,12 +386,14 @@ async function loadProjects() {
   }
 }
 
-async function loadCurrentProject() {
+async function loadCurrentProject(options = {}) {
+  const silent = Boolean(options.silent)
   if (!selectedProjectId.value) {
+    clearMaterialPolling()
     materials.value = []
     return
   }
-  loadingMaterials.value = true
+  if (!silent) loadingMaterials.value = true
   pageError.value = ''
   try {
     const response = await fetchProjectMaterials(selectedProjectId.value)
@@ -430,7 +403,8 @@ async function loadCurrentProject() {
     pageError.value = apiErrorMessage(error, '资料加载失败，请重试')
     materials.value = []
   } finally {
-    loadingMaterials.value = false
+    if (!silent) loadingMaterials.value = false
+    scheduleMaterialPolling()
   }
 }
 
@@ -451,13 +425,6 @@ async function enrichMaterial(material) {
     savedTargetType: bindings[0]?.target_type || 'whole_course',
     savingBindings: false,
   }
-}
-
-function handleProjectChange(projectId) {
-  router.replace({
-    query: projectId ? { projectId } : {},
-  })
-  loadCurrentProject()
 }
 
 function openFilePicker() {
@@ -499,7 +466,9 @@ async function uploadMaterial(file) {
     uploadProgress.value = 100
     uploadNote.value = ''
     await loadCurrentProject()
-    ElMessage.success('资料已上传并完成解析')
+    ElMessage.success(
+      isImageFile(file) ? '图片已保存，视觉识别暂未启用' : '资料已上传并完成解析',
+    )
   } catch (error) {
     uploadError.value = apiErrorMessage(error, '资料上传失败，请检查文件后重试')
     uploadProgress.value = 0
@@ -596,7 +565,8 @@ function materialProgress(material) {
   }[material.status] || 0
 }
 
-function materialStatusLabel(status) {
+function materialStatusLabel(status, fileType) {
+  if (status === 'ready' && fileType === 'image') return '仅保存'
   return {
     uploaded: '已上传',
     queued: '排队中',
@@ -633,8 +603,29 @@ function locatorLabel(locator = {}) {
   if (locator.slide) return `第 ${locator.slide} 页`
   if (locator.paragraph) return `第 ${locator.paragraph} 段`
   if (locator.table) return `第 ${locator.table} 个表格`
+  if (locator.timestamp) return `视频 ${locator.timestamp}`
   if (locator.offset !== undefined) return `文本位置 ${locator.offset}`
   return '来源定位'
+}
+
+function scheduleMaterialPolling() {
+  clearMaterialPolling()
+  if (isUnmounted.value) return
+  if (!materials.value.some(material => ['queued', 'processing'].includes(material.status))) return
+  pollTimer.value = window.setTimeout(() => {
+    if (isUnmounted.value) return
+    loadCurrentProject({ silent: true })
+  }, 2500)
+}
+
+function clearMaterialPolling() {
+  if (!pollTimer.value) return
+  window.clearTimeout(pollTimer.value)
+  pollTimer.value = null
+}
+
+function isImageFile(file) {
+  return file?.type?.startsWith('image/') || /\.(png|jpe?g|gif|bmp|webp)$/i.test(file?.name || '')
 }
 
 function formatBytes(value) {
@@ -676,22 +667,26 @@ function go(path) {
   gap: 12px;
 }
 
-.project-selector {
+.project-context-display {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-width: 280px;
+  min-width: 0;
 }
 
-.project-selector label,
+.project-context-display span,
 .upload-options label {
   color: #475569;
   font-size: 13px;
   font-weight: 700;
 }
 
-.project-select {
-  min-width: 220px;
+.project-context-display strong {
+  max-width: 280px;
+  overflow: hidden;
+  color: #1463ff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .section-context {
@@ -810,21 +805,35 @@ function go(path) {
   padding: 0 4px;
 }
 
-.evidence-meta {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+.evidence-list {
+  display: grid;
   gap: 10px;
+}
+
+.evidence-card {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) minmax(0, 1fr) max-content;
+  align-items: center;
+  gap: 18px;
+  min-height: 104px;
+  padding: 16px 18px;
+}
+
+.evidence-meta {
+  display: grid;
+  align-self: start;
+  gap: 8px;
 }
 
 .evidence-meta strong {
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .locator-badge {
+  justify-self: start;
   flex: 0 0 auto;
   padding: 3px 7px;
   border: 1px solid #cbd5e1;
@@ -838,16 +847,18 @@ function go(path) {
 .evidence-card p {
   display: -webkit-box;
   overflow: hidden;
-  margin: 0 0 12px;
+  margin: 0;
   color: #475569;
   line-height: 1.65;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 3;
 }
 
 .evidence-actions {
   display: flex;
+  justify-content: flex-end;
   gap: 8px;
+  white-space: nowrap;
 }
 
 .detail-summary {
@@ -907,16 +918,11 @@ function go(path) {
 }
 
 @media (max-width: 720px) {
-  .project-selector {
+  .project-context-display {
     width: 100%;
     min-width: 0;
     align-items: flex-start;
     flex-direction: column;
-  }
-
-  .project-select {
-    width: 100%;
-    min-width: 0;
   }
 
   .upload-zone {
@@ -930,6 +936,15 @@ function go(path) {
 
   .detail-summary {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-card {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .evidence-actions {
+    justify-content: flex-start;
   }
 }
 

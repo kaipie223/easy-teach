@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "node ./node_modules/@playwright/test/cli.js test"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.0",

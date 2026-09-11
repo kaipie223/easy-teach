@@ -23,6 +23,7 @@ class MessageType(str, Enum):
     TEXT = "text"
     QUESTION = "question"
     CONFIRM = "confirm"
+    ERROR = "error"
 
 
 class FileType(str, Enum):
@@ -92,6 +93,7 @@ class RevisionPatchStatus(str, Enum):
 class ExportFormat(str, Enum):
     PPTX = "pptx"
     DOCX = "docx"
+    PDF = "pdf"
     HTML = "html"
 
 
@@ -338,7 +340,7 @@ class KnowledgeDocumentInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     document_id: str
-    owner_id: str | None = None
+    owner_id: str
     collection_id: str
     title: str
     source_path: str
@@ -379,6 +381,7 @@ class KnowledgeSearchRequest(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 class KnowledgePoint(BaseModel):
+    point_id: str = Field(default="", max_length=40, pattern=r"^[A-Za-z0-9_-]*$")
     order: int
     title: str
     difficulty: str = "basic"
@@ -447,7 +450,17 @@ class IntentResult(BaseModel):
     duration_minutes: int = 45
     knowledge_points: list[KnowledgePoint] = Field(default_factory=list)
     logic_flow: list[str] = Field(default_factory=list)
+    teaching_focus: str = ""
+    teaching_difficulties: str = ""
+    output_types: list[str] = Field(default_factory=list)
+    interaction_ideas: str = ""
     style_preference: str = ""
+    existing_knowledge: str = ""
+    case_preference: str = ""
+    homework_type: str = ""
+    forbidden_content: str = ""
+    scenario_extensions: str = ""
+    extra_requirements: str = ""
     missing_info: list[str] = Field(default_factory=list)
     follow_up_question: str | None = None
     confirm_summary: str | None = None
@@ -524,7 +537,45 @@ class InteractionSpec(BaseModel):
     prompt: str
     items: list[str] = Field(default_factory=list)
     answer_groups: dict[str, list[str]] = Field(default_factory=dict)
+    explanation: str = ""
+    feedback_correct: str = "回答正确，已经掌握本题要点。"
+    feedback_incorrect: str = "答案还不完整，请结合解析再试一次。"
+    score: int = Field(default=10, ge=1, le=100)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+
+
+class PptxContentSpec(BaseModel):
+    narrative_arc: list[str] = Field(default_factory=list)
+    visual_direction: str = "清晰、克制、便于课堂投影"
+    max_bullets_per_slide: int = Field(default=5, ge=2, le=8)
+    speaker_notes_required: bool = True
+
+
+class DocxContentSpec(BaseModel):
+    teacher_preparation: list[str] = Field(default_factory=list)
+    differentiation: list[str] = Field(default_factory=list)
+    homework: str = ""
+    reflection_prompts: list[str] = Field(default_factory=list)
+
+
+class PdfContentSpec(BaseModel):
+    printable_summary: str = ""
+    assessment_checklist: list[str] = Field(default_factory=list)
+    include_sources: bool = True
+
+
+class HtmlContentSpec(BaseModel):
+    interaction_ids: list[str] = Field(default_factory=list)
+    completion_message: str = "练习完成，请结合解析回顾本课要点。"
+    allow_retry: bool = True
+    accessibility_notes: list[str] = Field(default_factory=list)
+
+
+class OutputContentSpecs(BaseModel):
+    pptx: PptxContentSpec = Field(default_factory=PptxContentSpec)
+    docx: DocxContentSpec = Field(default_factory=DocxContentSpec)
+    pdf: PdfContentSpec = Field(default_factory=PdfContentSpec)
+    html: HtmlContentSpec = Field(default_factory=HtmlContentSpec)
 
 
 class CoursewarePlanSpec(BaseModel):
@@ -541,14 +592,25 @@ class CoursewarePlanSpec(BaseModel):
     lesson_sections: list[LessonPlanSectionSpec] = Field(default_factory=list)
     interactions: list[InteractionSpec] = Field(default_factory=list)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    output_specs: OutputContentSpecs = Field(default_factory=OutputContentSpecs)
     generation_notes: list[str] = Field(default_factory=list)
 
 
 class CoursewarePlanBuildRequest(BaseModel):
     force_rebuild: bool = False
+    generation_mode: Literal["ai", "template"] = "ai"
+    allow_template_fallback: bool = False
+
+
+class CoursewarePlanRevisionRequest(BaseModel):
+    base_plan_id: str = Field(min_length=1, max_length=40)
+    content: CoursewarePlanSpec
+    summary: str = Field(default="教师编辑教学蓝图", max_length=500)
 
 
 class CoursewarePlanInfo(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     plan_id: str
     user_id: str
     project_id: str
@@ -559,6 +621,10 @@ class CoursewarePlanInfo(BaseModel):
     duration_minutes: int
     content: CoursewarePlanSpec
     source_refs: list[EvidenceRef] = Field(default_factory=list)
+    generation_mode: Literal["ai", "template", "manual"] = "template"
+    model_name: str | None = None
+    prompt_version: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
     notes: str = ""
     created_at: datetime
     updated_at: datetime
@@ -593,12 +659,19 @@ class RevisionApplyRequest(BaseModel):
     confirmed: bool = False
 
 
+class AIRegenerateRequest(BaseModel):
+    base_version_id: str = Field(min_length=1, max_length=40)
+    target_type: Literal["slide", "lesson_section", "interaction"]
+    target_id: str = Field(min_length=1, max_length=128)
+    instruction: str = Field(min_length=1, max_length=2000)
+
+
 class RestoreVersionRequest(BaseModel):
     summary: str | None = Field(default=None, max_length=500)
 
 
 class ArtifactVersionInfo(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, protected_namespaces=())
 
     artifact_version_id: str
     user_id: str
@@ -609,6 +682,10 @@ class ArtifactVersionInfo(BaseModel):
     status: ArtifactVersionStatus
     summary: str
     snapshot: CoursewarePlanSpec
+    generation_mode: Literal["initial", "manual", "ai", "restore"] = "manual"
+    model_name: str | None = None
+    prompt_version: str | None = None
+    usage: dict[str, Any] = Field(default_factory=dict)
     quality_status: str = "pending"
     quality_report: dict[str, Any] | None = None
     created_at: datetime
@@ -637,9 +714,14 @@ class RevisionPatchInfo(BaseModel):
 class ExportCreateRequest(BaseModel):
     artifact_version_id: str | None = Field(default=None, max_length=40)
     formats: list[ExportFormat] = Field(
-        default_factory=lambda: [ExportFormat.PPTX, ExportFormat.DOCX, ExportFormat.HTML],
+        default_factory=lambda: [
+            ExportFormat.PPTX,
+            ExportFormat.DOCX,
+            ExportFormat.PDF,
+            ExportFormat.HTML,
+        ],
         min_length=1,
-        max_length=3,
+        max_length=4,
     )
     force: bool = False
 
@@ -724,13 +806,16 @@ class TaskInfo(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 class FeedbackRequest(BaseModel):
-    task_id: str
-    feedback: str
+    task_id: str = Field(min_length=1, max_length=80)
+    feedback: str = Field(min_length=1, max_length=4000)
 
 
 class FeedbackResponse(BaseModel):
     task_id: str
     status: str
+    project_id: str
+    patch_id: str
+    requires_confirmation: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════

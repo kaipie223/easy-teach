@@ -136,7 +136,7 @@ PRD 文件：
 - `ai/` 已有意图分析、RAG 分块/检索、语音转写和提示词模块。
 - `gen/` 已有 PPTX、DOCX、动画 HTML 生成器和部分文件解析器。
 - `frontend/src/` 有工作台、需求共创、对话、资料中心、蓝图、成果编辑、导出与版本页面雏形。
-- `knowledge-base/` 已有 4 本计算机相关教材 PDF。
+- 旧 `knowledge-base/` 公共资料目录已停用；资料由教师在“我的知识库”中私有导入。
 - 远程最新提交包含 BGE 中文向量模型、`sentence-transformers`、Chroma 测试和 Docker 相关调整。
 
 ### 尚未完成或需要重构
@@ -280,6 +280,7 @@ POST   /knowledge/documents
 PATCH  /knowledge/documents/{id}
 
 POST   /projects/{id}/plan
+POST   /projects/{id}/plan/revisions
 POST   /projects/{id}/generate
 GET    /jobs/{id}
 
@@ -315,6 +316,7 @@ GET    /exports/{id}/download
 - 不要在根目录 `src/` 继续增加前端功能。
 - 不要用 mock 数据冒充真实接口完成度。
 - 不要把模型调用直接散落到路由中，统一进入服务/适配器层。
+- 教学意图生产入口统一使用 `backend/services/intent.py`；`ai/intent` 与 `ai/fusion` 仅为旧实验代码，不得接入生产路由。
 - 不要让模型直接返回或执行任意 HTML/JavaScript；互动内容使用固定模板 + JSON 数据。
 - 不要用 `create_all` 替代正式迁移。
 - 不要把 API Key 写入数据库、代码、日志或提交记录。

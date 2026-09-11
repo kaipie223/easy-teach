@@ -12,21 +12,28 @@ from sqlalchemy.orm import Session as DBSession
 from backend.core.errors import ApiError
 from backend.models.brief import TeachingBrief
 from backend.models.courseware import CoursewarePlan
-from backend.models.knowledge import KnowledgeDocument
 from backend.models.material import EvidenceChunk, Material
 from backend.models.project import Project
 from backend.models.session import gen_id
 from backend.schemas import (
     CoursewarePlanInfo,
     CoursewarePlanSpec,
+    DocxContentSpec,
     EvidenceRef,
+    HtmlContentSpec,
     InteractionSpec,
     KnowledgePoint,
     LessonPlanSectionSpec,
+    OutputContentSpecs,
+    PdfContentSpec,
+    PptxContentSpec,
     RAGDocument,
     SlideSpec,
 )
 from backend.services.brief import get_latest_brief, normalize_content
+from backend.services.courseware_ai import CoursewareAIError, generate_courseware_spec
+from backend.services.quality import require_courseware_quality
+from backend.services.version_allocator import project_version_lock
 
 
 def get_latest_plan(db: DBSession, project_id: str) -> CoursewarePlan | None:
@@ -90,26 +97,24 @@ def _build_evidence_refs(
         .all()
     }
     material_ids = list(materials)
-    evidence_query = db.query(EvidenceChunk).filter(EvidenceChunk.is_valid.is_(True))
+    chunks = []
     if material_ids:
-        evidence_query = evidence_query.filter(EvidenceChunk.material_id.in_(material_ids))
-    else:
-        evidence_query = evidence_query.filter(EvidenceChunk.material_id.is_(None))
-    chunks = evidence_query.order_by(EvidenceChunk.created_at.asc()).limit(12).all()
-
-    document_ids = {chunk.knowledge_document_id for chunk in chunks if chunk.knowledge_document_id}
-    document_names = {
-        item.document_id: item.title
-        for item in db.query(KnowledgeDocument)
-        .filter(KnowledgeDocument.document_id.in_(document_ids))
-        .all()
-    } if document_ids else {}
+        chunks = (
+            db.query(EvidenceChunk)
+            .filter(
+                EvidenceChunk.is_valid.is_(True),
+                EvidenceChunk.material_id.in_(material_ids),
+            )
+            .order_by(EvidenceChunk.created_at.asc())
+            .limit(12)
+            .all()
+        )
 
     refs: list[EvidenceRef] = [
         _evidence_ref_from_chunk(
             chunk,
             material_names=materials,
-            document_names=document_names,
+            document_names={},
         )
         for chunk in chunks
     ]
@@ -441,11 +446,144 @@ def compile_plan_content(
         lesson_sections=sections,
         interactions=[interaction],
         evidence_refs=evidence_refs,
+        output_specs=OutputContentSpecs(
+            pptx=PptxContentSpec(
+                narrative_arc=logic_flow,
+                visual_direction=content["style_preference"] or "清晰、克制、便于课堂投影",
+                max_bullets_per_slide=5,
+            ),
+            docx=DocxContentSpec(
+                teacher_preparation=[
+                    "检查课件、互动练习和课堂展示设备",
+                    "准备与核心知识点对应的示例或材料",
+                ],
+                differentiation=[
+                    "为基础薄弱学生提供步骤提示",
+                    "为进阶学生增加迁移解释任务",
+                ],
+                homework=content["homework_type"] or "选择一个新情境解释本课核心知识点。",
+                reflection_prompts=[
+                    "哪些环节最能暴露学生的真实理解？",
+                    "下次教学需要调整哪一项活动或时间分配？",
+                ],
+            ),
+            pdf=PdfContentSpec(
+                printable_summary=f"围绕“{title}”完成学习、练习与迁移。",
+                assessment_checklist=[
+                    f"能够说明：{point.title}" for point in knowledge_points
+                ],
+            ),
+            html=HtmlContentSpec(
+                interaction_ids=[interaction.interaction_id],
+                accessibility_notes=["支持键盘操作", "反馈不只依赖颜色表达"],
+            ),
+        ),
         generation_notes=[
             "蓝图基于已确认 TeachingBrief 编译生成。",
             "每个成果都消费同一份 SlideSpec、LessonPlanSectionSpec 和 InteractionSpec。",
         ],
     )
+
+
+def revise_courseware_plan(
+    db: DBSession,
+    project: Project,
+    base: CoursewarePlan,
+    requested: CoursewarePlanSpec,
+    *,
+    summary: str,
+) -> CoursewarePlan:
+    """Create an immutable manual plan revision while preserving trusted identities and refs."""
+    latest = get_latest_plan(db, project.project_id)
+    if latest is None or latest.plan_id != base.plan_id:
+        raise ApiError(
+            "教学蓝图已发生变化，请刷新后再保存",
+            code="PLAN_VERSION_CONFLICT",
+            status_code=409,
+        )
+
+    base_data = CoursewarePlanSpec.model_validate(base.plan_json or {}).model_dump(mode="json")
+    candidate = requested.model_dump(mode="json")
+    for field in (
+        "target_audience",
+        "duration_minutes",
+        "teaching_goal",
+        "knowledge_points",
+        "logic_flow",
+        "teaching_focus",
+        "teaching_difficulties",
+        "evidence_refs",
+    ):
+        candidate[field] = base_data[field]
+
+    for collection, id_field in (
+        ("slides", "slide_id"),
+        ("lesson_sections", "section_id"),
+        ("interactions", "interaction_id"),
+    ):
+        base_items = base_data[collection]
+        requested_by_id = {item[id_field]: item for item in candidate[collection]}
+        if set(requested_by_id) != {item[id_field] for item in base_items}:
+            raise ApiError(
+                "当前编辑只能修改已有蓝图条目",
+                code="PLAN_STRUCTURE_CHANGE_NOT_ALLOWED",
+                status_code=422,
+                details={"collection": collection},
+            )
+        merged_items = []
+        for base_item in base_items:
+            item = requested_by_id[base_item[id_field]]
+            item[id_field] = base_item[id_field]
+            item["order"] = base_item.get("order", item.get("order"))
+            item["evidence_refs"] = base_item.get("evidence_refs", [])
+            if collection == "interactions":
+                item["interaction_type"] = base_item["interaction_type"]
+            merged_items.append(item)
+        candidate[collection] = merged_items
+
+    revised_spec = CoursewarePlanSpec.model_validate(candidate)
+    section_total = sum(item.duration_minutes for item in revised_spec.lesson_sections)
+    if section_total != revised_spec.duration_minutes:
+        raise ApiError(
+            "教学流程时长总和必须等于课程总时长",
+            code="PLAN_DURATION_MISMATCH",
+            status_code=422,
+            details={
+                "expected_minutes": revised_spec.duration_minutes,
+                "actual_minutes": section_total,
+            },
+        )
+    require_courseware_quality(revised_spec)
+    with project_version_lock(db, project.project_id):
+        version = (
+            db.query(func.max(CoursewarePlan.version))
+            .filter(CoursewarePlan.project_id == project.project_id)
+            .scalar()
+            or 0
+        ) + 1
+        now = datetime.now(timezone.utc)
+        plan = CoursewarePlan(
+            plan_id=gen_id("plan"),
+            user_id=project.owner_id,
+            project_id=project.project_id,
+            brief_id=base.brief_id,
+            version=version,
+            status="ready",
+            title=revised_spec.title,
+            duration_minutes=revised_spec.duration_minutes,
+            plan_json=revised_spec.model_dump(mode="json"),
+            source_refs=base.source_refs or [],
+            generation_mode="manual",
+            model_name=None,
+            prompt_version="manual-plan-v1",
+            usage_json={},
+            notes=summary.strip() or "教师编辑教学蓝图",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(plan)
+        db.flush()
+    return plan
 
 
 def build_courseware_plan(
@@ -454,6 +592,8 @@ def build_courseware_plan(
     *,
     rag_docs: Iterable[RAGDocument] = (),
     force_rebuild: bool = False,
+    generation_mode: str = "ai",
+    allow_template_fallback: bool = False,
 ) -> CoursewarePlan:
     brief = get_latest_brief(db, project_id=project.project_id)
     if brief is None or brief.status != "confirmed":
@@ -464,35 +604,78 @@ def build_courseware_plan(
             suggested_action="补充需求确认单并点击确认后再试",
         )
     latest = get_latest_plan(db, project.project_id)
-    if latest is not None and latest.brief_id == brief.brief_id and not force_rebuild:
+    if (
+        latest is not None
+        and latest.brief_id == brief.brief_id
+        and latest.generation_mode == generation_mode
+        and not force_rebuild
+    ):
         return latest
 
     refs = _build_evidence_refs(db, project.project_id, rag_docs)
-    content = compile_plan_content(brief, refs)
-    version = (
-        db.query(func.max(CoursewarePlan.version))
-        .filter(CoursewarePlan.project_id == project.project_id)
-        .scalar()
-        or 0
-    ) + 1
-    now = datetime.now(timezone.utc)
-    plan = CoursewarePlan(
-        plan_id=gen_id("plan"),
-        user_id=project.owner_id,
-        project_id=project.project_id,
-        brief_id=brief.brief_id,
-        version=version,
-        status="ready",
-        title=content.title,
-        duration_minutes=content.duration_minutes,
-        plan_json=content.model_dump(mode="json"),
-        source_refs=[item.model_dump(mode="json") for item in refs],
-        notes="",
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(plan)
-    db.flush()
+    model_name = None
+    prompt_version = None
+    usage: dict = {}
+    notes = ""
+    resolved_mode = generation_mode
+    if generation_mode == "template":
+        content = compile_plan_content(brief, refs)
+        notes = "教师明确选择基础模板生成。"
+    elif generation_mode == "ai":
+        try:
+            ai_result = generate_courseware_spec(brief.content_json or {}, refs)
+            content = ai_result.spec
+            model_name = ai_result.model_name
+            prompt_version = ai_result.prompt_version
+            usage = ai_result.usage
+        except CoursewareAIError as exc:
+            if not allow_template_fallback:
+                raise ApiError(
+                    str(exc),
+                    code=exc.code,
+                    status_code=503,
+                    recoverable=exc.recoverable,
+                    suggested_action="重试 AI 生成，或明确选择使用基础模板",
+                ) from exc
+            resolved_mode = "template"
+            content = compile_plan_content(brief, refs)
+            content.generation_notes.append(f"AI 生成失败后使用基础模板：{exc.code}")
+            notes = f"AI 生成失败后由教师允许降级：{exc.code}"
+    else:
+        raise ApiError(
+            "不支持的蓝图生成模式",
+            code="PLAN_GENERATION_MODE_INVALID",
+            status_code=422,
+        )
+    with project_version_lock(db, project.project_id):
+        version = (
+            db.query(func.max(CoursewarePlan.version))
+            .filter(CoursewarePlan.project_id == project.project_id)
+            .scalar()
+            or 0
+        ) + 1
+        now = datetime.now(timezone.utc)
+        plan = CoursewarePlan(
+            plan_id=gen_id("plan"),
+            user_id=project.owner_id,
+            project_id=project.project_id,
+            brief_id=brief.brief_id,
+            version=version,
+            status="ready",
+            title=content.title,
+            duration_minutes=content.duration_minutes,
+            plan_json=content.model_dump(mode="json"),
+            source_refs=[item.model_dump(mode="json") for item in refs],
+            generation_mode=resolved_mode,
+            model_name=model_name,
+            prompt_version=prompt_version,
+            usage_json=usage,
+            notes=notes,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(plan)
+        db.flush()
     return plan
 
 
@@ -510,6 +693,10 @@ def to_info(plan: CoursewarePlan) -> CoursewarePlanInfo:
         duration_minutes=plan.duration_minutes,
         content=content,
         source_refs=refs,
+        generation_mode=plan.generation_mode or "template",
+        model_name=plan.model_name,
+        prompt_version=plan.prompt_version,
+        usage=plan.usage_json or {},
         notes=plan.notes or "",
         created_at=plan.created_at,
         updated_at=plan.updated_at or plan.created_at,

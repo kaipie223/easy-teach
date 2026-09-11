@@ -24,7 +24,6 @@
 import { computed } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
-  ChatDotRound,
   Collection,
   Download,
   EditPen,
@@ -40,14 +39,7 @@ import { useAuthStore } from '@/stores/auth'
 const route = useRoute()
 const auth = useAuthStore()
 
-const navItems = computed(() => [
-  {
-    key: 'home',
-    label: '开始新课',
-    to: '/home',
-    icon: ChatDotRound,
-    active: route.name === 'home',
-  },
+const teacherNavItems = computed(() => [
   {
     key: 'dashboard',
     label: '工作台',
@@ -60,7 +52,7 @@ const navItems = computed(() => [
     label: '需求共创',
     to: '/requirements',
     icon: User,
-    active: route.name === 'requirements',
+    active: route.name === 'requirements' || route.name === 'chat',
   },
   {
     key: 'materials',
@@ -69,24 +61,13 @@ const navItems = computed(() => [
     icon: FolderOpened,
     active: route.name === 'materials',
   },
-  ...(auth.user?.role === 'admin'
-    ? [
-      {
-        key: 'admin',
-        label: '管理员工作台',
-        to: '/admin',
-        icon: UserFilled,
-        active: route.name === 'admin',
-      },
-      {
-        key: 'knowledge',
-        label: '知识库管理',
-        to: '/knowledge',
-        icon: Collection,
-        active: route.name === 'knowledge',
-      },
-    ]
-    : []),
+  {
+    key: 'knowledge',
+    label: '我的知识库',
+    to: '/knowledge',
+    icon: Collection,
+    active: route.name === 'knowledge',
+  },
   {
     key: 'blueprint',
     label: '教学蓝图',
@@ -116,6 +97,20 @@ const navItems = computed(() => [
   },
 ])
 
+const navItems = computed(() => (
+  auth.user?.role === 'admin'
+    ? [
+      {
+        key: 'admin',
+        label: '管理员工作台',
+        to: '/admin',
+        icon: UserFilled,
+        active: route.name === 'admin',
+      },
+    ]
+    : teacherNavItems.value
+))
+
 function handleNavClick(event, item) {
   if (item.disabled) {
     event.preventDefault()
@@ -131,6 +126,8 @@ function handleNavClick(event, item) {
   background: #ffffff;
   display: flex;
   flex-direction: column;
+  height: 100%;
+  overflow: hidden;
 }
 
 .brand {
@@ -146,10 +143,12 @@ function handleNavClick(event, item) {
 }
 
 .nav-list {
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 20px 16px;
+  overflow-y: auto;
 }
 
 .nav-item {

@@ -26,14 +26,22 @@ from backend.schemas import (
     TaskInfo,
 )
 from backend.services.intent import get_intent_analyzer
-from backend.services.brief import brief_to_intent, get_latest_brief, normalize_content, persist_intent_result
+from backend.services.brief import (
+    brief_to_intent,
+    get_latest_brief,
+    normalize_content,
+    persist_intent_result,
+    to_info,
+)
 from backend.services.courseware import build_courseware_plan
 from backend.services.rag import search as rag_search
 from backend.services.quality import require_courseware_quality
 from backend.services.task_queue import claim_task_attempt, task_info_values, touch_task, utcnow
 from backend.services.versions import ensure_initial_version
-from backend.services.parser import parse_docx, parse_image, parse_pdf, parse_video
+from backend.services.parser import parse_docx, parse_pdf
 from backend.services.generator import generate_docx, generate_html, generate_pptx
+from backend.services.limits import ensure_storage_capacity, ensure_task_capacity
+from backend.services.uploads import remove_managed_file
 
 logger = logging.getLogger(__name__)
 
@@ -67,16 +75,7 @@ class Orchestrator:
         if db is not None and session is not None:
             brief, result = persist_intent_result(db, session, result)
         brief_content = normalize_content(brief.content_json) if brief is not None else None
-        brief_payload = (
-            {
-                "brief_id": brief.brief_id,
-                "version": brief.version,
-                "status": brief.status,
-                "content": brief_content,
-            }
-            if brief is not None
-            else None
-        )
+        brief_payload = to_info(brief).model_dump(mode="json") if brief is not None else None
 
         # 3. 流式输出确认/追问
         if not result.is_complete:
@@ -145,6 +144,10 @@ class Orchestrator:
             if existing is not None:
                 return TaskInfo(**task_info_values(existing))
 
+        if not session.user_id:
+            raise RuntimeError("Authenticated generation requires a session owner")
+        ensure_task_capacity(db, session.user_id)
+
         task_id = gen_id("task")
         task = Task(
             task_id=task_id,
@@ -188,6 +191,8 @@ class Orchestrator:
         task = db.query(Task).filter(Task.task_id == task_id).first()
         if not task:
             return
+        if not task.user_id:
+            raise RuntimeError("Anonymous generation tasks are no longer supported")
 
         try:
             touch_task(db, task, 10)
@@ -207,7 +212,7 @@ class Orchestrator:
 
             # Step 2: RAG 检索
             query = f"{intent.teaching_goal} {' '.join(kp.title for kp in intent.knowledge_points)}"
-            rag_docs = _sync(rag_search(query, top_k=5))
+            rag_docs = _sync(rag_search(query, top_k=5, owner_id=task.user_id))
             touch_task(db, task, 40)
 
             # Step 3: 解析参考资料
@@ -393,10 +398,6 @@ def _load_references(session_id: str, db: DBSession) -> list[ReferenceMaterial]:
                 text = _sync(parse_pdf(str(path)))
             elif f.file_type == "word":
                 text = _sync(parse_docx(str(path)))
-            elif f.file_type == "image":
-                text = _sync(parse_image(str(path)))
-            elif f.file_type == "video":
-                text = _sync(parse_video(str(path)))
             else:
                 continue
             refs.append(ReferenceMaterial(
@@ -447,6 +448,13 @@ def _persist_output_files(
         existing = db.query(FileRecord).filter(FileRecord.file_id == output.file_id).first()
         if existing:
             continue
+        if not user_id:
+            raise RuntimeError("Generated files require an authenticated owner")
+        try:
+            ensure_storage_capacity(db, user_id, path.stat().st_size)
+        except Exception:
+            remove_managed_file(path, root=settings.output_dir)
+            raise
         db.add(
             FileRecord(
                 file_id=output.file_id,

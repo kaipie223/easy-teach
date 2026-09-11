@@ -43,9 +43,7 @@ def list_projects(
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    query = db.query(Project)
-    if user.role != "admin":
-        query = query.filter(Project.owner_id == user.user_id)
+    query = db.query(Project).filter(Project.owner_id == user.user_id)
     if not include_deleted:
         query = query.filter(Project.deleted_at.is_(None))
     projects = query.order_by(Project.updated_at.desc(), Project.created_at.desc()).all()

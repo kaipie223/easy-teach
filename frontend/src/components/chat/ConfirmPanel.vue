@@ -10,7 +10,7 @@
     <div class="cp-summary">
       <div v-for="(value, key) in data.fields" :key="key" class="cp-field">
         <span class="cp-label">{{ getFieldLabel(key) }}</span>
-        <span class="cp-value">{{ value }}</span>
+        <span class="cp-value">{{ formatFieldValue(key, value) }}</span>
       </div>
     </div>
 
@@ -45,16 +45,49 @@ defineEmits(['confirm', 'modify'])
 
 const FIELD_LABELS = {
   topic: '课程主题',
+  teaching_goal: '教学目标',
   audience: '授课对象',
+  target_audience: '授课对象',
   duration: '课时时长',
+  duration_minutes: '课时时长',
   objectives: '教学目标',
   core_knowledge: '核心知识点',
+  knowledge_points: '核心知识点',
+  logic_flow: '教学流程',
+  teaching_focus: '教学重点',
+  teaching_difficulties: '教学难点',
   focus_difficulties: '重难点',
   output_type: '输出形式',
+  output_types: '输出形式',
+  interaction_ideas: '互动设计',
+  style: '教学风格',
+  style_preference: '教学风格',
 }
 
 function getFieldLabel(key) {
-  return FIELD_LABELS[key] || key
+  return FIELD_LABELS[key] || '补充信息'
+}
+
+const OUTPUT_TYPE_LABELS = {
+  pptx: 'PPT 课件',
+  docx: 'Word 教案',
+  pdf: 'PDF 打印版',
+  html: '互动 HTML',
+}
+
+function formatFieldValue(key, value) {
+  if (value === null || value === undefined || value === '') return '未填写'
+  if (key === 'output_type' || key === 'output_types') {
+    const types = Array.isArray(value) ? value : String(value).split(/[、,]/)
+    return types.map(item => OUTPUT_TYPE_LABELS[item.trim()] || item.trim()).filter(Boolean).join('、')
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map(item => (typeof item === 'object' && item !== null ? item.title || item.name : item))
+      .filter(Boolean)
+      .join('、')
+  }
+  return String(value)
 }
 </script>
 
@@ -84,20 +117,26 @@ function getFieldLabel(key) {
 
 .cp-field {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 10px;
-  align-items: baseline;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
 }
 
 .cp-label {
   color: #6b7280;
   font-size: 13px;
+  line-height: 1.7;
   text-align: right;
+  white-space: nowrap;
 }
 
 .cp-value {
+  min-width: 0;
   color: #111827;
   font-size: 14px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .cp-note {
@@ -116,5 +155,17 @@ function getFieldLabel(key) {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+@media (max-width: 640px) {
+  .cp-field {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+
+  .cp-label {
+    font-weight: 700;
+    text-align: left;
+  }
 }
 </style>

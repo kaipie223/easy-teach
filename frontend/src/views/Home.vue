@@ -2,7 +2,7 @@
   <div class="page-stack">
     <div class="page-header">
       <div>
-        <h1>开始新课</h1>
+        <h1>新建项目</h1>
         <p>输入课程名称，TeachMate AI 将引导你完成教学设计</p>
       </div>
     </div>
@@ -48,44 +48,27 @@
         </div>
       </div>
 
-      <!-- 最近会话 -->
-      <div v-if="recentSessions.length" class="recent-section">
-        <h3>最近会话</h3>
-        <div class="recent-list">
-          <div
-            v-for="s in recentSessions"
-            :key="s.id"
-            class="recent-item"
-            @click="$router.push(`/chat/${s.id}`)"
-          >
-            <el-icon><ChatDotRound /></el-icon>
-            <span class="recent-name">{{ s.name }}</span>
-            <span class="recent-time">{{ formatDate(s.created_at) }}</span>
-            <el-icon class="recent-arrow"><ArrowRight /></el-icon>
-          </div>
-        </div>
-      </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { EditPen, Reading, ChatDotRound, ArrowRight } from '@element-plus/icons-vue'
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { EditPen, Reading } from '@element-plus/icons-vue'
 import { useSessionStore } from '@/stores/session'
-import { createProject, fetchProject } from '@/api'
+import { useProjectStore } from '@/stores/project'
+import { createProject } from '@/api'
 
 const router = useRouter()
-const route = useRoute()
 const sessionStore = useSessionStore()
+const projectStore = useProjectStore()
 
 const courseName = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
 
-const recentSessions = ref([]) // TODO: 从 localStorage 或后端获取
-const selectedProjectId = ref(typeof route.query.projectId === 'string' ? route.query.projectId : '')
+const createdProject = ref(null)
 
 async function handleCreate() {
   const name = courseName.value.trim()
@@ -95,14 +78,13 @@ async function handleCreate() {
   errorMsg.value = ''
 
   try {
-    let projectId = selectedProjectId.value
-    if (!projectId) {
-      const project = await createProject({ title: name, scenario: '' })
-      projectId = project.data.project_id
+    if (!createdProject.value) {
+      const response = await createProject({ title: name, scenario: '' })
+      createdProject.value = response.data
+      projectStore.selectProject(response.data)
     }
-    const res = await sessionStore.createSession(name, projectId)
-    // 保存到本地最近列表
-    saveRecentSession({ id: res.session_id, name, created_at: new Date().toISOString() })
+    const res = await sessionStore.createSession(name, createdProject.value.project_id)
+    projectStore.setActiveSession(res.session_id)
     router.push(`/chat/${res.session_id}`)
   } catch (err) {
     errorMsg.value = err.response?.data?.error?.message || err.message || '创建会话失败，请重试'
@@ -111,39 +93,6 @@ async function handleCreate() {
   }
 }
 
-function saveRecentSession(session) {
-  try {
-    const stored = JSON.parse(localStorage.getItem('recent_sessions') || '[]')
-    const filtered = stored.filter(s => s.id !== session.id)
-    filtered.unshift(session)
-    localStorage.setItem('recent_sessions', JSON.stringify(filtered.slice(0, 10)))
-    recentSessions.value = filtered.slice(0, 10)
-  } catch { /* ignore */ }
-}
-
-function loadRecentSessions() {
-  try {
-    recentSessions.value = JSON.parse(localStorage.getItem('recent_sessions') || '[]')
-  } catch { /* ignore */ }
-}
-
-function formatDate(ts) {
-  const d = new Date(ts)
-  if (isNaN(d.getTime())) return ''
-  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
-loadRecentSessions()
-
-onMounted(async () => {
-  if (!selectedProjectId.value) return
-  try {
-    const res = await fetchProject(selectedProjectId.value)
-    courseName.value = res.data.title
-  } catch {
-    selectedProjectId.value = ''
-  }
-})
 </script>
 
 <style scoped>
@@ -195,53 +144,4 @@ onMounted(async () => {
   text-align: left;
 }
 
-.recent-section {
-  max-width: 600px;
-  margin: 0 auto;
-  width: 100%;
-}
-
-.recent-section h3 {
-  margin: 0 0 12px;
-  font-size: 16px;
-  color: #374151;
-}
-
-.recent-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.recent-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border: 1px solid #e4e9f2;
-  border-radius: 8px;
-  background: #ffffff;
-  cursor: pointer;
-  transition: box-shadow 0.15s ease;
-}
-
-.recent-item:hover {
-  box-shadow: 0 2px 12px rgba(20, 99, 255, 0.1);
-  border-color: #c0d4f7;
-}
-
-.recent-name {
-  flex: 1;
-  font-weight: 600;
-  color: #111827;
-}
-
-.recent-time {
-  color: #9ca3af;
-  font-size: 13px;
-}
-
-.recent-arrow {
-  color: #9ca3af;
-}
 </style>

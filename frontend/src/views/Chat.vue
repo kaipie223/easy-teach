@@ -21,7 +21,7 @@
       <!-- 顶部信息栏 -->
       <div class="chat-topbar">
         <div class="chat-topbar-left">
-          <el-button text @click="$router.push('/home')">
+          <el-button text aria-label="返回工作台" @click="$router.push('/')">
             <el-icon><ArrowLeft /></el-icon>
           </el-button>
           <span class="chat-title">课程对话</span>
@@ -37,6 +37,24 @@
 
       <!-- 消息列表 -->
       <div class="chat-messages" ref="msgListRef">
+        <el-alert
+          v-if="aiError"
+          :title="aiError.message"
+          :description="aiError.suggested_action"
+          type="error"
+          show-icon
+          closable
+          @close="aiError = null"
+        >
+          <el-button
+            v-if="initialStartFailed"
+            size="small"
+            type="primary"
+            @click="startInitialConversation"
+          >
+            重试 AI 开场
+          </el-button>
+        </el-alert>
         <el-empty v-if="messages.length === 0" description="开始对话吧" />
 
         <template v-for="(msg, idx) in messages" :key="msg.id">
@@ -99,9 +117,11 @@
 
 <script setup>
 import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { storeToRefs } from 'pinia'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, MagicStick } from '@element-plus/icons-vue'
 import { useSessionStore } from '@/stores/session'
+import { useProjectStore } from '@/stores/project'
 import { SSEClient } from '@/utils/sse'
 import MessageBubble from '@/components/chat/MessageBubble.vue'
 import QuestionCard from '@/components/chat/QuestionCard.vue'
@@ -113,6 +133,7 @@ import TeachingBriefPanel from '@/components/chat/TeachingBriefPanel.vue'
 const route = useRoute()
 const router = useRouter()
 const sessionStore = useSessionStore()
+const projectStore = useProjectStore()
 
 const msgListRef = ref(null)
 const inputRef = ref(null)
@@ -124,27 +145,36 @@ const sseActive = ref(false)
 const voiceVisible = ref(false)
 const briefSaving = ref(false)
 const briefConfirming = ref(false)
+const aiError = ref(null)
+const initialStartFailed = ref(false)
 
 const sessionId = ref(route.params.sessionId)
-const messages = sessionStore.messages // 直接引用 store 的响应式数组
-const projectId = computed(() => sessionStore.projectId)
-const canGenerate = computed(() => !projectId.value || sessionStore.brief?.status === 'confirmed')
+const { messages, projectId, brief } = storeToRefs(sessionStore)
+const canGenerate = computed(() => !projectId.value || brief.value?.status === 'confirmed')
 
 // ── 加载会话 ──────────────────────────────────
 
 async function loadSession() {
   loading.value = true
   error.value = ''
+  let shouldStartConversation = false
   try {
-    await sessionStore.fetchSession(sessionId.value)
+    const loadedSession = await sessionStore.fetchSession(sessionId.value)
     if (projectId.value) {
+      await projectStore.selectProjectById(projectId.value)
+      projectStore.setActiveSession(sessionId.value)
+    }
+    if (projectId.value && loadedSession.brief_id) {
       await sessionStore.fetchBrief()
     }
+    shouldStartConversation = loadedSession.messages.length === 0
+      || loadedSession.messages.every(message => message.msg_type === 'error')
   } catch (err) {
     error.value = err.response?.data?.error?.message || err.message || '加载会话失败'
   } finally {
     loading.value = false
   }
+  if (shouldStartConversation) await startInitialConversation()
 }
 
 // ── 发送消息 ──────────────────────────────────
@@ -153,6 +183,7 @@ async function handleSend(text) {
   if (!text.trim() || sseActive.value || sending.value) return
 
   sending.value = true
+  aiError.value = null
 
   // 1. 添加用户消息
   sessionStore.addMessage({ role: 'user', content: text })
@@ -161,40 +192,58 @@ async function handleSend(text) {
   await nextTick()
   scrollToBottom()
 
-  // 3. 连接 SSE
-  sseActive.value = true
   sending.value = false
+  await connectAIStream(`/api/v1/sessions/${sessionId.value}/chat`, { message: text })
+}
 
-  const client = new SSEClient(`/api/v1/sessions/${sessionId.value}/chat`, {
+async function startInitialConversation() {
+  aiError.value = null
+  initialStartFailed.value = false
+  await connectAIStream(`/api/v1/sessions/${sessionId.value}/start`, {}, { initial: true })
+}
+
+async function connectAIStream(url, body, { initial = false } = {}) {
+  if (sseActive.value) return
+  sseActive.value = true
+  const client = new SSEClient(url, {
     onText: (chunk) => {
       sessionStore.appendToLastMessage(chunk)
       scrollToBottom()
     },
     onQuestion: (data) => {
+      sessionStore.applyBriefEvent(data.brief)
       sessionStore.addStructuredMessage('question', data)
       scrollToBottom()
     },
     onConfirm: (data) => {
+      sessionStore.applyBriefEvent(data.brief)
       sessionStore.addStructuredMessage('confirm', data)
       scrollToBottom()
     },
     onDone: () => {
       sseActive.value = false
+      if (initial) initialStartFailed.value = false
     },
     onError: (err) => {
       console.error('SSE 错误:', err)
       sseActive.value = false
-      sessionStore.addMessage({
-        role: 'assistant',
-        content: '连接中断，请重试。',
-      })
+      aiError.value = {
+        message: '对话连接中断',
+        suggested_action: '请检查网络后重试，本次输入已保留。',
+      }
+      if (initial) initialStartFailed.value = true
+    },
+    onServiceError: (details) => {
+      sseActive.value = false
+      aiError.value = details
+      if (initial) initialStartFailed.value = true
     },
   })
 
   sessionStore.setSSEClient(client)
 
   try {
-    await client.connect({ message: text })
+    await client.connect(body)
   } catch {
     sseActive.value = false
   }
@@ -219,7 +268,7 @@ async function handleConfirm() {
   briefConfirming.value = true
   error.value = ''
   try {
-    if (projectId.value && sessionStore.brief?.status !== 'confirmed') {
+    if (projectId.value && brief.value?.status !== 'confirmed') {
       await sessionStore.confirmBrief()
     }
     handleGenerate()
@@ -239,8 +288,7 @@ function handleModify() {
 
 function handleGenerate() {
   if (!canGenerate.value) return
-  const query = projectId.value ? `?projectId=${encodeURIComponent(projectId.value)}` : ''
-  router.push(`/blueprint${query}`)
+  router.push('/blueprint')
 }
 
 // ── 语音 ──────────────────────────────────────
@@ -318,9 +366,11 @@ if (sessionId.value) {
 
 .chat-main {
   min-width: 0;
+  min-height: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .chat-status {
@@ -374,13 +424,20 @@ if (sessionId.value) {
 }
 
 @media (max-width: 980px) {
+  .chat-page {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+
   .chat-workspace {
     display: block;
-    overflow: auto;
+    overflow: visible;
   }
 
   .chat-main {
     min-height: 560px;
+    overflow: visible;
   }
 }
 </style>

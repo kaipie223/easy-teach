@@ -4,7 +4,8 @@ from fastapi import APIRouter, Body, Depends
 from sqlalchemy.orm import Session as DBSession
 
 from backend.core.errors import ApiError
-from backend.core.ownership import get_project_for_user
+from backend.config import settings
+from backend.core.ownership import get_project_for_user, get_task_for_user
 from backend.core.security import get_current_user
 from backend.db.database import get_db
 from backend.models.project import Project
@@ -14,6 +15,7 @@ from backend.schemas import (
     CoursewareGenerateRequest,
     CoursewarePlanBuildRequest,
     CoursewarePlanInfo,
+    CoursewarePlanRevisionRequest,
     TaskInfo,
 )
 from backend.services.brief import get_latest_brief
@@ -21,11 +23,13 @@ from backend.services.courseware import (
     build_courseware_plan,
     get_plan_for_project,
     get_latest_plan,
+    revise_courseware_plan,
     to_info,
 )
 from backend.services.orchestrator import get_orchestrator
+from backend.services.limits import consume_model_quota
 from backend.services.rag import search as rag_search
-from backend.services.task_queue import enqueue_generation
+from backend.services.task_queue import enqueue_generation, task_info_values
 from backend.services.versions import ensure_initial_version
 
 router = APIRouter()
@@ -53,6 +57,30 @@ def get_plan(
     return to_info(plan)
 
 
+@router.post("/{project_id}/plan/revisions", response_model=CoursewarePlanInfo, status_code=201)
+def create_plan_revision(
+    project_id: str,
+    request: CoursewarePlanRevisionRequest,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    project = get_project_for_user(db, project_id, user)
+    base = get_plan_for_project(db, project.project_id, request.base_plan_id)
+    if base is None:
+        raise ApiError("教学蓝图不存在", code="PLAN_NOT_FOUND", status_code=404)
+    plan = revise_courseware_plan(
+        db,
+        project,
+        base,
+        request.content,
+        summary=request.summary,
+    )
+    ensure_initial_version(db, project, plan, user_id=user.user_id)
+    db.commit()
+    db.refresh(plan)
+    return to_info(plan)
+
+
 @router.post("/{project_id}/plan", response_model=CoursewarePlanInfo, status_code=201)
 async def create_plan(
     project_id: str,
@@ -67,9 +95,18 @@ async def create_plan(
         build_courseware_plan(db, project)
 
     force_rebuild = request.force_rebuild if request else False
+    generation_mode = request.generation_mode if request else "ai"
     current = get_latest_plan(db, project.project_id)
-    if current is not None and current.brief_id == brief.brief_id and not force_rebuild:
+    if (
+        current is not None
+        and current.brief_id == brief.brief_id
+        and current.generation_mode == generation_mode
+        and not force_rebuild
+    ):
         return to_info(current)
+
+    if generation_mode == "ai":
+        consume_model_quota(user.user_id)
 
     content = brief.content_json if brief else {}
     query = " ".join(
@@ -82,13 +119,16 @@ async def create_plan(
             ],
         ]
     ).strip()
-    rag_docs = await rag_search(query, top_k=5)
+    rag_docs = await rag_search(query, top_k=5, owner_id=project.owner_id)
     plan = build_courseware_plan(
         db,
         project,
         rag_docs=rag_docs,
         force_rebuild=force_rebuild,
+        generation_mode=generation_mode,
+        allow_template_fallback=request.allow_template_fallback if request else False,
     )
+    ensure_initial_version(db, project, plan, user_id=user.user_id)
     db.commit()
     db.refresh(plan)
     return to_info(plan)
@@ -135,4 +175,8 @@ def generate_project(
         idempotency_key=request.idempotency_key if request else None,
     )
     enqueue_generation(task_info.task_id, db=db)
+    if settings.task_queue_eager:
+        db.expire_all()
+        refreshed = get_task_for_user(db, task_info.task_id, user)
+        return TaskInfo(**task_info_values(refreshed))
     return task_info
