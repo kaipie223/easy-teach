@@ -445,6 +445,9 @@ class TeachingBriefConfirmRequest(BaseModel):
 # ═══════════════════════════════════════════════════════════════
 
 class IntentResult(BaseModel):
+    course_name: str = ""
+    subject: str = ""
+    grade: str = ""
     teaching_goal: str = ""
     target_audience: str = ""
     duration_minutes: int = 45
@@ -454,6 +457,7 @@ class IntentResult(BaseModel):
     teaching_difficulties: str = ""
     output_types: list[str] = Field(default_factory=list)
     interaction_ideas: str = ""
+    focus_and_difficulties: str = ""
     style_preference: str = ""
     existing_knowledge: str = ""
     case_preference: str = ""
