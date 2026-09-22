@@ -425,6 +425,7 @@ class BailianVideoClient:
                 timeout_seconds=request.timeout_seconds,
                 api_key=self.config.api_key,
                 max_tokens=self.config.max_output_tokens,
+                base_url=self.config.base_url,
             )
         return _post_json(request.endpoint, request.payload, request.headers, request.timeout_seconds)
 
@@ -848,6 +849,7 @@ def _dashscope_sdk_call(
     timeout_seconds: int,
     api_key: str,
     max_tokens: int,
+    base_url: str = "",
 ) -> tuple[dict[str, Any], dict[str, str]]:
     try:
         import dashscope  # type: ignore
@@ -856,6 +858,10 @@ def _dashscope_sdk_call(
         raise VideoRequestError("dashscope SDK is required for local file:// video input") from exc
     if api_key:
         dashscope.api_key = api_key
+    if base_url:
+        # SDK 通路默认走全局公网端点；忽略 config.base_url 会让部署指向企业代理
+        # 或内网网关时静默绕过、直连公网。REST 通路用的是 config.endpoint，这里对齐。
+        dashscope.base_http_api_url = base_url
     native_messages = _dashscope_native_messages(messages)
     try:
         response = MultiModalConversation.call(
