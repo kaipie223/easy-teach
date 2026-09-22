@@ -282,6 +282,13 @@ def _run_json(command: list[str]) -> dict[str, Any]:
         raise FFmpegError("ffprobe returned invalid JSON.") from exc
 
 
+# 单次 ffmpeg/ffprobe 调用的超时预算（秒）。
+# `_run_command` 是本模块所有外部命令的唯一出口，所以超时在这里统一收口：
+# 网络盘掉线、上传中的文件、畸形文件都不会再把 worker 永久占住且无取消路径。
+# 需要调整时只改这一个常量，不要在调用点散落魔数。
+FFMPEG_TIMEOUT_SECONDS = 5.0
+
+
 def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -291,9 +298,15 @@ def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=FFMPEG_TIMEOUT_SECONDS,
         )
     except FileNotFoundError as exc:
         raise FFmpegError("ffmpeg/ffprobe is not available on PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise FFmpegError(
+            f"ffmpeg/ffprobe 超过 {FFMPEG_TIMEOUT_SECONDS:g}s 未返回，已中断："
+            f"{' '.join(command[:2])}"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         message = (exc.stderr or exc.stdout or "ffmpeg command failed.").strip()
         raise FFmpegError(message) from exc
