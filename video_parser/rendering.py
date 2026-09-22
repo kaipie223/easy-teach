@@ -27,6 +27,33 @@ class RenderingError(RuntimeError):
     pass
 
 
+# 渲染产物的完整清单；失败时按它清理，避免把半个产物目录留给消费方。
+_RENDER_ARTIFACT_NAMES = (
+    "generation_plan.json",
+    "slide_spec.json",
+    "lesson_plan_spec.json",
+    "interactive_spec.json",
+    "quality_report.json",
+    "generation_access_audit.json",
+    "teaching_demo.pptx",
+    "lesson_plan.docx",
+    "content_summary.md",
+    "preview.svg",
+    "artifact_manifest.json",
+)
+
+
+def _cleanup_failed_render(root: Path) -> None:
+    """清掉本次写出的产物，以及上一次成功运行留下的 artifact_manifest.json。
+
+    manifest 记录的是上一次成功产物的哈希；失败后若还留着它，消费方按它校验就会
+    拿到 MISMATCH，且无法区分"下载损坏"和"刚刚生成失败"。
+    """
+    for name in _RENDER_ARTIFACT_NAMES:
+        (root / name).unlink(missing_ok=True)
+    shutil.rmtree(root / "interactive_html", ignore_errors=True)
+
+
 def render_demo_outputs(
     package: LoadedTeachingContentPackage,
     output_dir: str | Path,
@@ -41,79 +68,87 @@ def render_demo_outputs(
     slides = build_slide_deck_spec(package, plan)
     lesson = build_lesson_plan_spec(package, plan)
     interactive = build_interactive_spec(package, plan)
+    # 质量门禁先于任何落盘：门禁失败时既不该留下半个产物，也不该留下上一次成功
+    # 运行写下的 artifact_manifest.json —— 否则消费方按它校验会拿到 MISMATCH，
+    # 且无法区分"下载损坏"和"刚刚生成失败"。
+    quality = evaluate_generation(package, plan, slides, lesson, interactive, run_label=run_label)
+    if quality.errors:
+        _cleanup_failed_render(root)
+        raise RenderingError("Quality gate blocked export: " + "; ".join(quality.errors[:3]))
+
     _write_json(root / "generation_plan.json", plan.model_dump(mode="json"))
     _write_json(root / "slide_spec.json", slides.model_dump(mode="json"))
     _write_json(root / "lesson_plan_spec.json", lesson.model_dump(mode="json"))
     _write_json(root / "interactive_spec.json", interactive.model_dump(mode="json"))
 
-    quality = evaluate_generation(package, plan, slides, lesson, interactive, run_label=run_label)
-    if quality.errors:
+    try:
+        pptx_path = root / "teaching_demo.pptx"
+        docx_path = root / "lesson_plan.docx"
+        html_dir = root / "interactive_html"
+        _render_pptx(package, slides, pptx_path)
+        _render_docx(package, lesson, docx_path)
+        _render_html(package, interactive, html_dir)
+        summary_path = root / "content_summary.md"
+        _render_markdown_summary(package, plan, summary_path)
+        preview_path = root / "preview.svg"
+        _render_preview(slides, preview_path)
         _write_json(root / "quality_report.json", quality.model_dump(mode="json"))
-        raise RenderingError("Quality gate blocked export: " + "; ".join(quality.errors[:3]))
+        audit = {
+            "stage": "generation",
+            "read_files": package.audit_snapshot(),
+            "source_video_reads": 0,
+            "source_video_access_required": False,
+            "only_package_relative_reads": all(_is_package_relative(path) for path in package.audit_snapshot()),
+        }
+        _write_json(root / "generation_access_audit.json", audit)
 
-    pptx_path = root / "teaching_demo.pptx"
-    docx_path = root / "lesson_plan.docx"
-    html_dir = root / "interactive_html"
-    _render_pptx(package, slides, pptx_path)
-    _render_docx(package, lesson, docx_path)
-    _render_html(package, interactive, html_dir)
-    summary_path = root / "content_summary.md"
-    _render_markdown_summary(package, plan, summary_path)
-    preview_path = root / "preview.svg"
-    _render_preview(slides, preview_path)
-    _write_json(root / "quality_report.json", quality.model_dump(mode="json"))
-    audit = {
-        "stage": "generation",
-        "read_files": package.audit_snapshot(),
-        "source_video_reads": 0,
-        "source_video_access_required": False,
-        "only_package_relative_reads": all(_is_package_relative(path) for path in package.audit_snapshot()),
-    }
-    _write_json(root / "generation_access_audit.json", audit)
-
-    artifact_files = []
-    for path, artifact_type in [
-        (root / "generation_plan.json", "other"),
-        (root / "slide_spec.json", "other"),
-        (root / "lesson_plan_spec.json", "other"),
-        (root / "interactive_spec.json", "other"),
-        (pptx_path, "pptx"),
-        (docx_path, "docx"),
-        (preview_path, "preview"),
-        (root / "quality_report.json", "quality"),
-        (root / "generation_access_audit.json", "quality"),
-        (summary_path, "other"),
-    ]:
-        artifact_files.append(
-            ArtifactFile(
-                path=path.relative_to(root).as_posix(),
-                sha256=file_sha256(path),
-                size_bytes=path.stat().st_size,
-                artifact_type=artifact_type,  # type: ignore[arg-type]
-            )
-        )
-    # pptx_previews 只可能由已删除的 artifact-tool 路线产生，该目录永不出现，
-    # 这段收集逻辑是恒假分支，一并移除。
-    for path in html_dir.rglob("*"):
-        if path.is_file():
+        artifact_files = []
+        for path, artifact_type in [
+            (root / "generation_plan.json", "other"),
+            (root / "slide_spec.json", "other"),
+            (root / "lesson_plan_spec.json", "other"),
+            (root / "interactive_spec.json", "other"),
+            (pptx_path, "pptx"),
+            (docx_path, "docx"),
+            (preview_path, "preview"),
+            (root / "quality_report.json", "quality"),
+            (root / "generation_access_audit.json", "quality"),
+            (summary_path, "other"),
+        ]:
             artifact_files.append(
                 ArtifactFile(
                     path=path.relative_to(root).as_posix(),
                     sha256=file_sha256(path),
                     size_bytes=path.stat().st_size,
-                    artifact_type="html",
+                    artifact_type=artifact_type,  # type: ignore[arg-type]
                 )
             )
-    manifest = ArtifactManifest(
-        plan_id=plan.plan_id,
-        package_id=package.manifest.package_id,
-        package_version=package.manifest.package_version,
-        files=artifact_files,
-        source_refs=plan.source_refs,
-        warnings=quality.warnings,
-        status="complete" if quality.status != "error" else "partial",
-    )
-    _write_json(root / "artifact_manifest.json", manifest.model_dump(mode="json"))
+        # pptx_previews 只可能由已删除的 artifact-tool 路线产生，该目录永不出现，
+        # 这段收集逻辑是恒假分支，一并移除。
+        for path in html_dir.rglob("*"):
+            if path.is_file():
+                artifact_files.append(
+                    ArtifactFile(
+                        path=path.relative_to(root).as_posix(),
+                        sha256=file_sha256(path),
+                        size_bytes=path.stat().st_size,
+                        artifact_type="html",
+                    )
+                )
+        manifest = ArtifactManifest(
+            plan_id=plan.plan_id,
+            package_id=package.manifest.package_id,
+            package_version=package.manifest.package_version,
+            files=artifact_files,
+            source_refs=plan.source_refs,
+            warnings=quality.warnings,
+            status="complete" if quality.status != "error" else "partial",
+        )
+        _write_json(root / "artifact_manifest.json", manifest.model_dump(mode="json"))
+    except Exception:
+        # 渲染中途失败同样不能留下半个产物目录（含上一次成功留下的陈旧 manifest）。
+        _cleanup_failed_render(root)
+        raise
     return {
         "output_dir": root,
         "manifest": manifest,
