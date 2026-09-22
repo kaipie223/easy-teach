@@ -421,6 +421,12 @@ def estimate_text_density(path: Path) -> float:
 
         image = ImageOps.grayscale(Image.open(path)).resize((160, 90))
         edges = image.filter(ImageFilter.FIND_EDGES)
+        # FIND_EDGES 对图像外部做零填充，会在最外一圈产生假的强边缘：
+        # 纯白空白帧因此被算成约 3.4% 的"文本密度"（正好是最外一圈的像素占比），
+        # 门槛形同虚设、空白帧全量进入付费 OCR。裁掉这一圈再统计。
+        width, height = edges.size
+        if width > 2 and height > 2:
+            edges = edges.crop((1, 1, width - 1, height - 1))
         pixels = list(edges.getdata())
         if not pixels:
             return 0.0
