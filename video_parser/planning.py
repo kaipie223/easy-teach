@@ -42,11 +42,11 @@ def build_demo_generation_plan(
     asset_refs: list[str] = []
     suppressed_raw_asr_units = 0
     for index, unit in enumerate(ir.teaching_units, start=1):
-        contents = _stage_content(unit)
+        contents = _stage_content(unit, include_answer_key=request.include_answer_key)
         if _has_suppressed_raw_asr(unit):
             suppressed_raw_asr_units += 1
         stage_status = "suggested" if unit.status == "unresolved" else "observed"
-        if unit.review_flags or not _presentation_blocks(unit):
+        if unit.review_flags or not _presentation_blocks(unit, include_answer_key=request.include_answer_key):
             stage_status = "suggested"
         stage = PlanStage(
             stage_id=f"stage_{index:03d}",
@@ -58,10 +58,10 @@ def build_demo_generation_plan(
             evidence_refs=unit.evidence_refs,
             asset_refs=_unit_assets(unit),
             status=stage_status,  # type: ignore[arg-type]
-            student_visible=bool(_presentation_blocks(unit)),
+            student_visible=bool(_presentation_blocks(unit, include_answer_key=request.include_answer_key)),
         )
         stages.append(stage)
-        if _presentation_blocks(unit):
+        if _presentation_blocks(unit, include_answer_key=request.include_answer_key):
             key_points.append(stage.title)
         source_refs.extend(unit.evidence_refs)
         asset_refs.extend(_unit_assets(unit))
@@ -137,7 +137,7 @@ def build_slide_deck_spec(
         unit = next((item for item in package.ir.teaching_units if item.id == stage.unit_id), None)
         if unit is None:
             continue
-        display_blocks = _presentation_blocks(unit)
+        display_blocks = _presentation_blocks(unit, include_answer_key=plan.request.include_answer_key)
         # A unit represented only by long/raw ASR remains auditable in the
         # package and teaching plan, but must not become a blank student slide.
         if not display_blocks and plan.request.student_mode:
@@ -272,6 +272,17 @@ def build_lesson_plan_spec(package: LoadedTeachingContentPackage, plan: DemoGene
 
 
 def build_interactive_spec(package: LoadedTeachingContentPackage, plan: DemoGenerationPlan) -> InteractiveSpec:
+    # 决策 2 / 选项 a：学生版不产出互动判题页。判题是客户端 JS 比对 correct_answer，
+    # 答案必须写进页面（看源码就能读到），所以"学生版 + 交互页"本质冲突 ——
+    # 与其把答案藏起来，不如直接不生成。
+    if not plan.request.include_answer_key:
+        return InteractiveSpec(
+            plan_id=plan.plan_id,
+            title=f"{plan.title} · 互动自检",
+            objective="学生版不提供答案，本次未生成互动自检页。",
+            questions=[],
+            source_refs=plan.source_refs,
+        )
     if package.ir.course_context.get("semantic_grouping") == "circuit_lesson_v1":
         return _build_circuit_interactive_spec(package, plan)
     questions: list[InteractiveQuestion] = []
@@ -426,9 +437,9 @@ def _build_circuit_interactive_spec(package: LoadedTeachingContentPackage, plan:
     )
 
 
-def _stage_content(unit: TeachingUnit) -> list[str]:
+def _stage_content(unit: TeachingUnit, *, include_answer_key: bool = True) -> list[str]:
     values: list[str] = []
-    for block in _presentation_blocks(unit):
+    for block in _presentation_blocks(unit, include_answer_key=include_answer_key):
         text = _display_text(block)
         if text:
             prefix = "公式：" if block.block_type == "formula" else ""
@@ -438,7 +449,7 @@ def _stage_content(unit: TeachingUnit) -> list[str]:
     return _unique(values)[:6]
 
 
-def _presentation_blocks(unit: TeachingUnit) -> list[ContentBlock]:
+def _presentation_blocks(unit: TeachingUnit, *, include_answer_key: bool = True) -> list[ContentBlock]:
     """Select compact, locally grounded blocks for generated teaching material.
 
     The IR intentionally keeps raw ASR and every visual observation for audit and
@@ -451,6 +462,10 @@ def _presentation_blocks(unit: TeachingUnit) -> list[ContentBlock]:
 
     ranked: list[tuple[int, int, ContentBlock]] = []
     for index, block in enumerate(unit.content_blocks):
+        # 学生版（include_answer_key=False）不把 answer 块选进展示内容：
+        # 否则答案会直接出现在普通内容页正文里，这个开关就形同虚设。
+        if not include_answer_key and block.block_type == "answer":
+            continue
         if not _is_presentable_block(block):
             continue
         priority = _presentation_priority(block)
