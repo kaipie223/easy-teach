@@ -773,6 +773,41 @@ def _failed_chunk_candidate_conflicts(
     return conflicts
 
 
+def _namespaced_chapter(chapter, chunk_index: int):
+    """给单个分片的章节 / 区间 ID 加上分片前缀。
+
+    每个分片是一次独立的模型请求，模型看不到其它分片，所以各分片都从
+    chapter_1 / interval_1 开始编号 —— 直接拼接必然重名；下游按 candidate_id
+    建字典会"后写覆盖先写"，章节因此挂到另一个分片的时间与证据上。
+    """
+    prefix = f"c{chunk_index}_"
+    renamed = {
+        interval.interval_id: f"{prefix}{interval.interval_id}"
+        for interval in chapter.candidate_intervals
+    }
+    intervals = [
+        interval.model_copy(update={"interval_id": renamed[interval.interval_id]})
+        for interval in chapter.candidate_intervals
+    ]
+    knowledge_points = [
+        point.model_copy(
+            update={
+                "candidate_interval_ids": [
+                    renamed.get(item, item) for item in point.candidate_interval_ids
+                ]
+            }
+        )
+        for point in chapter.knowledge_points
+    ]
+    return chapter.model_copy(
+        update={
+            "chapter_id": f"{prefix}{chapter.chapter_id}",
+            "candidate_intervals": intervals,
+            "knowledge_points": knowledge_points,
+        }
+    )
+
+
 def _merge_video_understanding_results(
     results: list[VideoUnderstandingResult],
     duration_seconds: float,
@@ -780,7 +815,14 @@ def _merge_video_understanding_results(
     usage: dict[str, int | float],
     failed_chunks: int,
 ) -> VideoUnderstandingResult:
-    chapters = [chapter for result in results for chapter in result.chapters]
+    # 只有真正合并多个分片时才需要命名空间：单个分片内部编号本来就是唯一的，
+    # 加了前缀反而会让产物 ID 形态与以往不一致。
+    needs_namespace = len(results) > 1
+    chapters = [
+        _namespaced_chapter(chapter, chunk_index) if needs_namespace else chapter
+        for chunk_index, result in enumerate(results, start=1)
+        for chapter in result.chapters
+    ]
     uncertainties = [item for result in results for item in result.uncertainties]
     warnings = [item for result in results for item in result.warnings]
     provenance = results[0].provenance
