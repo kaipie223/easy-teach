@@ -31,6 +31,10 @@ FPS_BY_VIDEO_TYPE = {
     "auto": 1.0,
 }
 
+# 抽帧时间戳不能落在视频末尾：仓库里其它抽帧点都用 duration - 0.05 兜住，
+# refine 这一处以前没有 —— 末位采样点 == duration 时 ffmpeg 必然失败。
+_END_EPSILON_SECONDS = 0.05
+
 
 class RefinementError(RuntimeError):
     """Base error for local candidate interval refinement."""
@@ -197,6 +201,8 @@ def _refine_one_interval(
     fps = config.fps_for(video_type)
     buffered_start = max(0.0, requested_start - config.buffer_seconds)
     buffered_end = min(duration_seconds, requested_end + config.buffer_seconds)
+    # 末位采样点必须严格早于视频结束，否则 -ss 落在末尾导致 FFmpegError。
+    buffered_end = max(buffered_start, min(buffered_end, duration_seconds - _END_EPSILON_SECONDS))
     timestamps = plan_refinement_timestamps(
         buffered_start,
         buffered_end,
