@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import mimetypes
+import shutil
 import uuid
 import zipfile
 from dataclasses import dataclass
@@ -16,13 +18,23 @@ import fitz
 from docx import Document
 from PIL import Image
 from pptx import Presentation
+from sqlalchemy.orm import Session as DBSession
 
 from backend.config import settings
 from backend.db.database import SessionLocal
 from backend.models.material import EvidenceChunk, Material, MaterialAnalysis
+from backend.schemas import CoursewarePlanSpec
+from backend.services.progress import material_ai_stage
+from backend.services.image_vision import (
+    ImageVisionError,
+    describe_image,
+    description_text,
+)
 from video_parser.parser import PARSER_VERSION as VIDEO_PARSER_VERSION
 from video_parser.parser import parse_video as video_parse_video
 from video_parser.schemas import VideoParseOptions, VideoParseResult
+
+logger = logging.getLogger(__name__)
 
 
 class MaterialValidationError(ValueError):
@@ -173,6 +185,55 @@ def detect_file_type_from_path(filename: str, path: Path) -> tuple[str, str]:
     return file_type, mime_type
 
 
+def resolve_slide_images(
+    db: DBSession,
+    project_id: str | None,
+    plan: CoursewarePlanSpec | dict[str, Any],
+) -> dict[str, Path]:
+    """Map every picture a snapshot references to the file backing it.
+
+    The snapshot is read defensively instead of validated: the legacy
+    anonymous-session path passes a generation-instruction dict that is not a
+    CoursewarePlan at all, and "cannot read a picture reference" has to mean
+    "render no pictures" rather than "fail the export".
+
+    References that are archived, belong to another project, or whose file has
+    vanished are dropped, so a renderer never receives a path it may not embed.
+    """
+    if isinstance(plan, CoursewarePlanSpec):
+        material_ids = {
+            slide.image.material_id for slide in plan.slides if slide.image is not None
+        }
+    else:
+        material_ids = {
+            str((slide.get("image") or {}).get("material_id") or "")
+            for slide in (plan.get("slides") or [])
+            if isinstance(slide, dict)
+        }
+    material_ids.discard("")
+    if not material_ids or not project_id:
+        return {}
+
+    rows = (
+        db.query(Material)
+        .filter(
+            Material.material_id.in_(material_ids),
+            Material.project_id == project_id,
+            Material.deleted_at.is_(None),
+            Material.file_type == "image",
+        )
+        .all()
+    )
+    resolved: dict[str, Path] = {}
+    for row in rows:
+        path = Path(row.stored_path)
+        if path.is_file():
+            resolved[row.material_id] = path
+        else:
+            logger.warning("Slide image is missing on disk: %s", row.material_id)
+    return resolved
+
+
 def parse_material(file_type: str, path: Path) -> ParsedMaterial:
     """Parse supported material formats into searchable, locatable evidence."""
     if file_type == "pdf":
@@ -234,6 +295,18 @@ def apply_parsed_material(
         )
 
 
+def _touch_material(db, material: Material, stage: str) -> None:
+    """Record parsing progress on the material row.
+
+    进度放在资料上，因为资料列表返回的就是这一行；解析本身仍由 analysis 负责。
+    """
+    now = datetime.now(timezone.utc)
+    material.stage = stage
+    material.stage_started_at = now
+    material.updated_at = now
+    db.commit()
+
+
 def fail_material_analysis(
     db,
     material: Material,
@@ -255,6 +328,15 @@ def fail_material_analysis(
     if status == "failed":
         analysis.completed_at = now
     analysis.updated_at = now
+
+
+def _missing_video_binaries() -> list[str]:
+    """视频解析依赖的外部二进制。
+
+    缺任何一个都要等到 `probe_video` 才以 FFmpegError 炸掉，而那时的错误信息
+    对使用者毫无可操作性；这里在解析真正开始前先探测一次。
+    """
+    return [name for name in ("ffmpeg", "ffprobe") if shutil.which(name) is None]
 
 
 def run_material_analysis(analysis_id: str, *, raise_errors: bool = False) -> str | None:
@@ -289,11 +371,28 @@ def run_material_analysis(analysis_id: str, *, raise_errors: bool = False) -> st
         analysis.updated_at = now
         db.commit()
 
+        if material.file_type == "video":
+            missing = _missing_video_binaries()
+            if missing:
+                raise MaterialValidationError(
+                    f"视频解析依赖 {'、'.join(missing)}，但服务器上找不到；"
+                    "请在部署环境安装 ffmpeg（需包含 ffprobe）后重试",
+                    code="FFMPEG_NOT_AVAILABLE",
+                )
+
+        _touch_material(db, material, "extract")
+        # 图片与视频的模型调用是这条链路里唯一可能跑几分钟的一步，必须在开始等待
+        # 之前就把阶段推过去，否则进度条会一直停在"提取文件内容"。
+        ai_stage = material_ai_stage(material.file_type)
+        if ai_stage is not None:
+            _touch_material(db, material, ai_stage)
+
         parsed = parse_material(material.file_type, Path(material.stored_path))
 
         analysis = db.query(MaterialAnalysis).filter(MaterialAnalysis.analysis_id == analysis_id).one()
         material = db.query(Material).filter(Material.material_id == analysis.material_id).one()
         db.query(EvidenceChunk).filter(EvidenceChunk.analysis_id == analysis.analysis_id).delete()
+        _touch_material(db, material, "index")
         apply_parsed_material(db, material, analysis, parsed)
         db.commit()
         return analysis_id
@@ -427,17 +526,101 @@ def _parse_pptx(path: Path) -> ParsedMaterial:
 
 
 def _parse_image(path: Path) -> ParsedMaterial:
+    """Describe a picture so the blueprint model can actually use it.
+
+    Without a configured vision model this keeps the previous behaviour exactly:
+    the file is stored, the analysis states that understanding is unavailable, and
+    no text is invented. A configured provider that fails is reported as failed
+    for the same reason — a picture nobody read must never look like a picture
+    somebody read.
+    """
     with Image.open(path) as image:
-        metadata = {
+        metadata: dict[str, Any] = {
             "format": image.format,
             "width": image.width,
             "height": image.height,
             "mode": image.mode,
             "requires_vision": True,
-            "vision_status": "not_configured",
-            "warning": "图片已保存，但视觉识别模型尚未配置，未生成证据文本。",
         }
-    return ParsedMaterial(text_content="", chunks=[], result_json=metadata)
+
+    try:
+        description = describe_image(path)
+    except ImageVisionError as exc:
+        logger.warning("Image understanding failed: %s", exc)
+        metadata.update({"vision_status": "failed", "warning": str(exc)})
+        return ParsedMaterial(text_content="", chunks=[], result_json=metadata)
+
+    if description is None:
+        metadata.update(
+            {
+                "vision_status": "not_configured",
+                "warning": "图片已保存，但视觉识别模型尚未配置，未生成证据文本。",
+            }
+        )
+        return ParsedMaterial(text_content="", chunks=[], result_json=metadata)
+
+    text = description_text(description)
+    metadata.update(
+        {
+            "vision_status": "ready",
+            "description": description["description"],
+            "keywords": description["keywords"],
+            "suggested_use": description["suggested_use"],
+            "vision_model": description["model_name"],
+            "vision_prompt_version": description["prompt_version"],
+        }
+    )
+    return ParsedMaterial(
+        text_content=text,
+        chunks=_chunks(
+            text,
+            {"kind": "image_description"},
+            {"format": metadata["format"], "vision_status": "ready"},
+        ),
+        result_json=metadata,
+    )
+
+
+def list_project_images(db: DBSession, project_id: str | None) -> list[dict[str, Any]]:
+    """Pictures this project uploaded, described well enough for the model to pick one.
+
+    This is what makes "the AI chooses the pictures" possible: the blueprint model
+    cannot see the files, so it is handed these descriptions and may only reference
+    the IDs listed here.
+    """
+    if not project_id:
+        return []
+    rows = (
+        db.query(Material)
+        .filter(
+            Material.project_id == project_id,
+            Material.file_type == "image",
+            Material.deleted_at.is_(None),
+        )
+        .order_by(Material.created_at.asc())
+        .all()
+    )
+    images: list[dict[str, Any]] = []
+    for material in rows:
+        analysis = (
+            db.query(MaterialAnalysis)
+            .filter(MaterialAnalysis.material_id == material.material_id)
+            .order_by(MaterialAnalysis.run_number.desc())
+            .first()
+        )
+        result = (analysis.result_json if analysis is not None else None) or {}
+        images.append(
+            {
+                "material_id": material.material_id,
+                "name": material.original_name,
+                # The teacher's own note is the fallback signal when vision is off.
+                "teacher_note": (material.ref_description or "").strip(),
+                "description": str(result.get("description") or ""),
+                "keywords": [str(item) for item in (result.get("keywords") or [])],
+                "vision_status": str(result.get("vision_status") or "pending"),
+            }
+        )
+    return images
 
 
 def _parse_video(path: Path) -> ParsedMaterial:
