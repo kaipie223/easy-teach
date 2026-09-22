@@ -177,14 +177,25 @@ def load_teaching_content_package(package_dir: str | Path) -> LoadedTeachingCont
     _assert_no_absolute_paths(ir_payload, "IR")
     _validate_package_files(root, manifest)
     _validate_references(result, ir, manifest)
+    # 记住这份结果是从哪个包目录读出来的：包内 keyframe 路径是相对包根的
+    # （assets/keyframes/...），只在内存里带出去，重新打包时才能凭它把图像找回来。
+    # 写包时 _sanitize_result 的 artifacts 白名单不含 package_root，不会落盘。
+    if isinstance(result.artifacts, dict):
+        result.artifacts["package_root"] = str(root)
     return LoadedTeachingContentPackage(root=root, manifest=manifest, result=result, ir=ir, quality_report=quality_report)
 
 
 def _source_path_candidates(parsed: VideoParseResult) -> list[Path]:
     candidates: list[Path] = []
-    run_dir = parsed.artifacts.get("run_dir") if isinstance(parsed.artifacts, dict) else None
+    artifacts = parsed.artifacts if isinstance(parsed.artifacts, dict) else {}
+    run_dir = artifacts.get("run_dir")
     if run_dir:
         candidates.append(Path(str(run_dir)))
+    # 从包里读出的结果带有来源包根：包内 keyframe 路径是相对包根的
+    # assets/keyframes/...，重新打包时只有这个根能把图像解析出来。
+    package_root = artifacts.get("package_root")
+    if package_root:
+        candidates.append(Path(str(package_root)))
     if parsed.source_video.path:
         candidates.append(Path(parsed.source_video.path).expanduser())
     return candidates
