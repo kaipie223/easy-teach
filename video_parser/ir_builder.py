@@ -782,15 +782,21 @@ def _build_circuit_ir(
     relations = _circuit_relations(units)
     for relation in relations:
         source_refs.extend(relation.evidence_refs)
-    warnings = [
-        "本课程使用 tiny 中文 ASR 作为原始语音证据；教学文案对“正极/负极、接通、灯泡、实物图、短路”等识别噪声做了可追溯规范化。",
-        "原始 ASR、时间戳和关键帧仍保存在 source/video_parse_result.json；纠正后的内容只写入 IR 的 corrected/inferred block。",
-    ]
+    # 对齐主路径：先保留解析阶段产生的真实 warning（OCR / ASR / vision 的失败信号），
+    # 再追加本兜底路径自身的说明性文案，不能把真实失败信号整段丢掉。
+    warnings = list(parsed.warnings)
+    warnings.append(
+        "本课程使用 tiny 中文 ASR 作为原始语音证据；教学文案对“正极/负极、接通、灯泡、实物图、短路”等识别噪声做了可追溯规范化。"
+    )
+    warnings.append(
+        "原始 ASR、时间戳和关键帧仍保存在 source/video_parse_result.json；纠正后的内容只写入 IR 的 corrected/inferred block。"
+    )
     result_conflicts = result_conflicts or []
     candidate_unresolved = candidate_unresolved or []
     verified_candidate_segments = verified_candidate_segments or []
+    quality_status = "error" if not units else "warning" if candidate_unresolved or result_conflicts else "ok"
     quality = QualitySummary(
-        status="warning" if result_conflicts else "warning",
+        status=quality_status,
         evidence_coverage=round(_evidence_coverage(units, dict(evidence_by_id)), 4),
         unresolved_count=len(candidate_unresolved),
         conflict_count=len(result_conflicts),
