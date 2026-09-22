@@ -309,13 +309,17 @@ class BailianVideoClient:
             fps=self.config.fps,
             asr_segments=asr_for_chunk,
         )
+        # fps 必须作为视频元素的字段随请求发出：只在提示词里"声明"FPS 时，服务端
+        # 按自己的默认值抽样，而本地预算 / 缓存键 / provenance 全按 config.fps 计算，
+        # 默认配置下实际抽帧会是预算的 2 倍，长视频分片因此超出单请求帧上限。
+        video_element = {**video_content, "fps": self.config.fps}
         payload = {
             "model": self.config.model,
             "messages": [
                 {"role": "system", "content": _system_prompt()},
                 {
                     "role": "user",
-                    "content": [video_content, {"type": "text", "text": request_text}],
+                    "content": [video_element, {"type": "text", "text": request_text}],
                 },
             ],
             "temperature": 0.1,
