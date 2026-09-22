@@ -92,18 +92,8 @@ def render_demo_outputs(
                 artifact_type=artifact_type,  # type: ignore[arg-type]
             )
         )
-    preview_dir = root / "pptx_previews"
-    if preview_dir.is_dir():
-        for path in preview_dir.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".png", ".webp", ".json"}:
-                artifact_files.append(
-                    ArtifactFile(
-                        path=path.relative_to(root).as_posix(),
-                        sha256=file_sha256(path),
-                        size_bytes=path.stat().st_size,
-                        artifact_type="preview",
-                    )
-                )
+    # pptx_previews 只可能由已删除的 artifact-tool 路线产生，该目录永不出现，
+    # 这段收集逻辑是恒假分支，一并移除。
     for path in html_dir.rglob("*"):
         if path.is_file():
             artifact_files.append(
@@ -137,57 +127,15 @@ def render_demo_outputs(
 
 
 def _render_pptx(package: LoadedTeachingContentPackage, spec: SlideDeckSpec, path: Path) -> None:
-    try:
-        _render_pptx_with_artifact_tool(package, spec, path)
-    except RenderingError as exc:
-        if "artifact-tool runtime is not available" not in str(exc):
-            raise
-        _render_pptx_legacy(package, spec, path)
+    """Render the deck with the maintained legacy renderer.
 
-
-def _render_pptx_with_artifact_tool(package: LoadedTeachingContentPackage, spec: SlideDeckSpec, path: Path) -> None:
-    """Use the bundled artifact-tool JS route for editable PPTX and page previews."""
-    script = Path(__file__).resolve().parents[2] / "scripts" / "render_pptx_artifact.mjs"
-    setup_script = Path(os.environ.get(
-        "VIDEO_PARSER_ARTIFACT_SETUP",
-        r"C:\Users\jjjj\.codex\plugins\cache\openai-primary-runtime\presentations\26.805.11740\skills\presentations\container_tools\setup_artifact_tool_workspace.mjs",
-    ))
-    node = os.environ.get(
-        "VIDEO_PARSER_NODE",
-        r"C:\Users\jjjj\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe",
-    )
-    if not script.is_file() or not setup_script.is_file() or not Path(node).is_file():
-        raise RenderingError("artifact-tool runtime is not available; set VIDEO_PARSER_NODE and VIDEO_PARSER_ARTIFACT_SETUP")
-    preview_dir = path.parent / "pptx_previews"
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="artifact_tool_workspace_") as temp_dir:
-        workspace = Path(temp_dir) / "workspace"
-        workspace.mkdir(parents=True, exist_ok=True)
-        setup = subprocess.run(
-            [node, str(setup_script), "--workspace", str(workspace)],
-            capture_output=True,
-            text=True,
-            check=False,
-            cwd=Path.home(),
-            env=os.environ.copy(),
-        )
-        if setup.returncode != 0:
-            raise RenderingError(f"artifact-tool workspace setup failed: {(setup.stderr or setup.stdout).strip()}")
-        runner = workspace / "render_pptx_artifact.mjs"
-        shutil.copy2(script, runner)
-        spec_path = workspace / "slide_spec.json"
-        spec_path.write_text(json.dumps(spec.model_dump(mode="json"), ensure_ascii=False), encoding="utf-8")
-        command = [
-            node,
-            str(runner),
-            "--spec", str(spec_path),
-            "--package_root", str(package.root),
-            "--output", str(path),
-            "--preview_dir", str(preview_dir),
-        ]
-        completed = subprocess.run(command, capture_output=True, text=True, check=False, cwd=workspace, env=os.environ.copy())
-        if completed.returncode != 0:
-            raise RenderingError(f"artifact-tool PPTX rendering failed: {(completed.stderr or completed.stdout).strip()}")
+    An "artifact-tool" JS route used to be attempted first, but the script it
+    invoked has never existed in this repository and its default node/setup
+    paths pointed at another developer's machine, so it always failed and was
+    silently swallowed.  The dead route is removed; PPTX rendering is now
+    predictable and always uses the working renderer.
+    """
+    _render_pptx_legacy(package, spec, path)
 
 
 def _render_pptx_legacy(package: LoadedTeachingContentPackage, spec: SlideDeckSpec, path: Path) -> None:
