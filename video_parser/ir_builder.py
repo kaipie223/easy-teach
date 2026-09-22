@@ -953,8 +953,13 @@ def _visual_block(unit_id: str, index: int, payload: Mapping[str, Any], evidence
     flags = ["visual_uncertain"] if status == "unresolved" else []
     if block_type in {"formula", "chart", "diagram"} and not payload.get("latex") and raw_type == "formula":
         flags.append("original_image_fallback")
+    # evidence_id 必须参与 id 生成：index 只是单条 visual evidence 内部的 blocks
+    # 下标，同一个 segment 里放多条 visual evidence（同镜头每 ~8 秒一个采样关键帧
+    # 是常态）时会撞 id，下游 _build_relations 用 block id 作 from_id/to_id。
     return ContentBlock(
-        id=f"block_{unit_id}_visual_{index:03d}",
+        id="_".join(
+            part for part in ("block", unit_id, "visual", evidence_id, f"{index:03d}") if part
+        ),
         block_type=block_type,  # type: ignore[arg-type]
         text=str(payload.get("text") or "").strip(),
         latex=str(payload.get("latex")) if payload.get("latex") else None,
