@@ -461,9 +461,36 @@ def _duplicate_or_uncovered_conflicts(
     del duration_seconds
     conflicts: list[ConflictItem] = []
     decision_ids = {item.candidate_id for item in decisions}
-    for chapter in understanding.chapters:
-        for interval in chapter.candidate_intervals:
-            if interval.interval_id not in decision_ids:
+    intervals = [
+        interval
+        for chapter in understanding.chapters
+        for interval in chapter.candidate_intervals
+    ]
+    # 同一个 interval_id 被多个区间使用时必须报冲突：下游把 candidate_id 当唯一键
+    # 建字典，重名会让"后写覆盖先写"，章节因此挂到另一个区间的时间与证据上。
+    occurrences: dict[str, int] = {}
+    for interval in intervals:
+        occurrences[interval.interval_id] = occurrences.get(interval.interval_id, 0) + 1
+    for interval_id, count in sorted(occurrences.items()):
+        if count < 2:
+            continue
+        interval = next(item for item in intervals if item.interval_id == interval_id)
+        conflicts.append(
+            ConflictItem(
+                id=f"conflict_duplicate_candidate_{interval_id}",
+                conflict_type="schema_or_range_error",
+                severity="high",
+                candidate_id=interval_id,
+                model_value=interval.model_dump(mode="json"),
+                local_value={"occurrences": count},
+                description="Several candidate intervals share one interval_id; id-keyed lookups downstream would collapse them.",
+                recommended_action="review_or_split_candidates",
+                status="open",
+                review_required=True,
+            )
+        )
+    for interval in intervals:
+        if occurrences[interval.interval_id] < 2 and interval.interval_id not in decision_ids:
                 conflicts.append(
                     ConflictItem(
                         id=f"conflict_missing_decision_{interval.interval_id}",
