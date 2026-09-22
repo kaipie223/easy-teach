@@ -770,13 +770,21 @@ def _render_markdown_summary(
         f"> 内容总结｜来源视频：{context.get('source_video_name', package.result.source_video.file_name)}｜时长：{_format_seconds(duration)}",
         "> 本总结以视频中文 ASR 和带时间戳的课程关键帧为证据；教学术语做了可追溯规范化，原始识别结果保留在中间包中。",
         "",
-        "## 一句话结论",
-        "",
-        "判断电路先确认是否存在从电源正极回到负极的完整路径，再检查是否有低电阻路径绕过电源或某个用电器。",
-        "",
-        "## 学习目标",
-        "",
     ]
+    # 一句话结论由真实数据（教学单元主题）生成。信息不足就整段省略：
+    # 既不写入与本课无关的固定文本，也不用占位符顶替。
+    topics = [unit.topic.strip() for unit in package.ir.teaching_units if (unit.topic or "").strip()]
+    if topics:
+        topic_text = "、".join(topics)
+        lines.extend(
+            [
+                "## 一句话结论",
+                "",
+                f"本课程依次讲解：{topic_text}。",
+                "",
+            ]
+        )
+    lines.extend(["## 学习目标", ""])
     lines.extend(f"- {objective}" for objective in plan.learning_objectives)
     lines.extend(["", "## 核心知识点", ""])
     for unit in package.ir.teaching_units:
@@ -792,32 +800,14 @@ def _render_markdown_summary(
             lines.append(f"- [{label}] {block.text}")
         lines.append("")
 
+    # 判断方法 / 典型现象与安全提醒 / 易错点原先是电路课固定文本，与本课无关，
+    # 且没有对应的真实数据源，因此整节删除而不是替换成别的硬编码内容。
     lines.extend(
         [
-            "## 判断方法",
-            "",
-            "1. 先沿电源外部寻找从正极回到负极的路径：路径完整是通路，任一处断开是断路。",
-            "2. 再看是否有导线、闭合开关或其他等效低电阻支路：直接连电源两端是电源短路，绕过某个用电器是用电器短路。",
-            "3. 最后根据电流是否经过对应元件，判断灯泡、LED 等用电器是否工作。",
-            "",
-            "## 典型现象与安全提醒",
-            "",
-            "- 通路：电流经过灯泡，灯泡发光。",
-            "- 断路：回路不完整，没有电流通过的灯泡不亮；即使开关看似闭合，别处断开仍是断路。",
-            "- 电源短路：电流很大，导线和电源会发热，可能烧坏电源；不要用导线随意连接电池正、负极。",
-            "- 用电器短路：电流绕过被短路的元件，被绕过的灯泡或 LED 不工作。",
-            "",
-            "## 易错点",
-            "",
-            "- 不能只看开关是否闭合，要检查整条回路是否完整。",
-            "- 电流不是简单选择“更短的线”，关键是是否存在导线等效的低电阻路径。",
-            "- 实物图和符号电路图可以有不同画法，判断依据是连接关系和电流路径。",
-            "- LED 有方向：长脚接正极、短脚接负极，方向接反不发光。",
-            "",
             "## 证据处理说明",
             "",
             f"- 原始证据：{len(package.result.transcript.segments)} 条 ASR 片段、{len(package.result.keyframes)} 张关键帧、{len(package.result.evidence)} 条证据记录。",
-            "- 处理方式：原始 ASR 不覆盖；“正极/负极、接通、灯泡、实物图、短路”等规范化表述标记为 corrected 或 inferred，并保留对应时间范围和 Evidence ID。",
+            "- 处理方式：原始 ASR 不覆盖；术语规范化与上下文归纳的内容标记为 corrected 或 inferred，并保留对应时间范围和 Evidence ID。",
             "- 生成边界：PPTX、DOCX 和 HTML 均只读取 TeachingContentPackage，不重新读取原视频。",
             "",
         ]
