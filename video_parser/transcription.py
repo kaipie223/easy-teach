@@ -19,7 +19,13 @@ def load_whisper_model(model_size: str, device: str = "cpu", compute_type: str =
         from faster_whisper import WhisperModel
     except ImportError as exc:
         raise TranscriptionError("faster-whisper is not installed.") from exc
-    return WhisperModel(model_size, device=device, compute_type=compute_type)
+    try:
+        return WhisperModel(model_size, device=device, compute_type=compute_type)
+    except Exception as exc:  # noqa: BLE001
+        # 模型名非法（ValueError）/ 本地缺失或下载失败（OSError 及其子类，含
+        # huggingface_hub 的 LocalEntryNotFoundError）都必须降级为 TranscriptionError，
+        # 交给 parser 侧追加 warning 并继续，而不是让整次解析任务崩溃。
+        raise TranscriptionError(f"whisper 模型加载失败：{exc}") from exc
 
 
 def transcribe_audio(
