@@ -74,7 +74,8 @@ def extract_audio(video_path: Path, output_dir: Path) -> Path:
             "-c:a",
             "pcm_s16le",
             str(audio_path),
-        ]
+        ],
+        timeout=FFMPEG_HEAVY_TIMEOUT_SECONDS,
     )
     if not audio_path.exists():
         raise FFmpegError("Audio extraction did not create a wav file.")
@@ -142,7 +143,8 @@ def extract_video_segment(
                 "-avoid_negative_ts",
                 "make_zero",
                 str(output_path),
-            ]
+            ],
+            timeout=FFMPEG_HEAVY_TIMEOUT_SECONDS,
         )
         if not output_path.exists() or output_path.stat().st_size <= 0:
             raise FFmpegError(f"Video segment extraction did not create {output_path}.")
@@ -191,7 +193,8 @@ def extract_video_segment(
                 "-avoid_negative_ts",
                 "make_zero",
                 str(output_path),
-            ]
+            ],
+            timeout=FFMPEG_HEAVY_TIMEOUT_SECONDS,
         )
         output_metadata = probe_video(output_path)
         actual_duration = output_metadata.duration_seconds
@@ -288,8 +291,12 @@ def _run_json(command: list[str]) -> dict[str, Any]:
 # 需要调整时只改这一个常量，不要在调用点散落魔数。
 FFMPEG_TIMEOUT_SECONDS = 5.0
 
+# 重编码 / 抽音轨这类长任务的预算：单次就可能远超上面的轻量预算，
+# 但同样必须有上界，否则网络盘掉线、畸形文件时依然会把 worker 永久占住。
+FFMPEG_HEAVY_TIMEOUT_SECONDS = 600.0
 
-def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
+
+def _run_command(command: list[str], timeout: float = FFMPEG_TIMEOUT_SECONDS) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             command,
@@ -298,13 +305,13 @@ def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=FFMPEG_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except FileNotFoundError as exc:
         raise FFmpegError("ffmpeg/ffprobe is not available on PATH.") from exc
     except subprocess.TimeoutExpired as exc:
         raise FFmpegError(
-            f"ffmpeg/ffprobe 超过 {FFMPEG_TIMEOUT_SECONDS:g}s 未返回，已中断："
+            f"ffmpeg/ffprobe 超过 {timeout:g}s 未返回，已中断："
             f"{' '.join(command[:2])}"
         ) from exc
     except subprocess.CalledProcessError as exc:
