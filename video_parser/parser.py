@@ -680,8 +680,9 @@ def _run_video_understanding(
             conflicts.extend(_refinement_conflicts(refinement.records))
         except Exception as exc:  # noqa: BLE001 - refinement is a recoverable local stage.
             message = f"候选区间局部二次取证失败，保留全局候选并标记复核：{_safe_video_error(exc)}"
+            # _handle_warning_or_raise 在非 strict 路径上已经 warnings.append(message)，
+            # 这里再 append 一次会让同一条 warning 出现两遍（前端按条数统计会算错）。
             _handle_warning_or_raise(options, warnings, message, exc)
-            warnings.append(message)
 
     video_artifacts = {
         "status": "completed" if not failed_chunks else "completed_with_errors",
