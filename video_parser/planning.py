@@ -559,10 +559,8 @@ def _presentation_title(unit: TeachingUnit) -> str:
             if block.text.strip()
         ]
     )
-    noisy_markers = ("咱们", "然后", "对吧", "OK", "那当然", "我很多年前", "这个")
-    is_noisy = len(topic) > 24 or any(marker in topic for marker in noisy_markers)
-    if not is_noisy:
-        return _compact_display_text(topic, 28) or "未命名单元"
+    # 电路概念改名只在上下文里真的出现对应概念时生效；命中"这个 / 然后 / 对吧"
+    # 这类中文口语高频词不再触发改名 —— 那会让任何口语化主题都掉进电路专用分支。
     if "通路" in context and "断路" in context and "短路" in context:
         return "通路、断路与短路判断"
     if "短路" in context:
@@ -573,7 +571,8 @@ def _presentation_title(unit: TeachingUnit) -> str:
         return "通路判断"
     if "LED" in context.upper() or "长脚" in context:
         return "LED 接法与单向导电"
-    return "补充说明（待复核）"
+    # 兜底回退到主题原文，不再用"补充说明（待复核）"这类占位符顶替真实标题。
+    return _compact_display_text(topic, 28) or "未命名单元"
 
 
 def _purpose_for_unit(unit: TeachingUnit) -> str:
