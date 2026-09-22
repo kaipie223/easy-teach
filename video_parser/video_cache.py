@@ -23,6 +23,7 @@ def make_video_cache_key(
     fps: float,
     chunk_start_seconds: float,
     chunk_end_seconds: float,
+    video_type: str,
 ) -> str:
     """Return a stable, secret-free cache key for one model request.
 
@@ -40,6 +41,9 @@ def make_video_cache_key(
         "fps": round(float(fps), 6),
         "chunk_start_seconds": round(float(chunk_start_seconds), 6),
         "chunk_end_seconds": round(float(chunk_end_seconds), 6),
+        # video_type 会进 prompt（"课程类型：{video_type}"），换类型却复用同一份
+        # 缓存会返回另一个视角的结果，用户无法察觉 —— 必须参与缓存键。
+        "video_type": str(video_type),
     }
     encoded = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()

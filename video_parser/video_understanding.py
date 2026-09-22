@@ -375,6 +375,7 @@ class BailianVideoClient:
             fps=self.config.fps,
             chunk_start_seconds=request.chunk_start_seconds,
             chunk_end_seconds=request.chunk_end_seconds,
+            video_type=video_type,
         )
         if self.config.cache_enabled and self._cache is not None:
             try:
