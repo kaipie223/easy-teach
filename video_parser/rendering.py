@@ -292,9 +292,14 @@ _DOCX_LABELS = {
 
 
 def _render_docx_compact(package: LoadedTeachingContentPackage, spec: LessonPlanSpec, path: Path) -> None:
-    from docx import Document
-    from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
-    from docx.shared import Pt
+    try:
+        from docx import Document
+        from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+        from docx.shared import Pt
+    except ImportError as exc:
+        # 缺 python-docx 必须转成可识别的 RenderingError：裸 ImportError 会让调用方
+        # 只看到"PPTX 已写出、DOCX 缺失"的半个产物，却判断不出原因。
+        raise RenderingError("DOCX renderer requires python-docx") from exc
 
     document = Document()
     _configure_docx_styles(document)
@@ -621,45 +626,10 @@ def _evidence_summary(refs: list[str], limit: int = 8) -> str:
 
 
 def _render_docx(package: LoadedTeachingContentPackage, spec: LessonPlanSpec, path: Path) -> None:
+    # 早先这里在 return 之后还留了一整套 docx 渲染实现，永远执行不到，
+    # 却让人误以为"缺 python-docx 会被转成 RenderingError"。死分支已删除，
+    # 依赖缺失现在由 _render_docx_compact 顶部统一转换。
     _render_docx_compact(package, spec, path)
-    return
-    try:
-        from docx import Document
-        from docx.enum.text import WD_ALIGN_PARAGRAPH
-        from docx.shared import Pt
-    except ImportError as exc:
-        raise RenderingError("DOCX renderer requires python-docx") from exc
-
-    document = Document()
-    styles = document.styles
-    styles["Normal"].font.name = "Microsoft YaHei"
-    styles["Normal"].font.size = Pt(10.5)
-    document.add_heading(spec.title, level=0)
-    paragraph = document.add_paragraph(f"对象：{spec.audience}")
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    _docx_bullets(document, "教学目标", spec.objectives)
-    _docx_bullets(document, "重点内容", spec.key_points)
-    _docx_bullets(document, "重点难点", spec.difficulties or ["暂无已标记难点；请关注来源复核提示。"])
-    _docx_bullets(document, "课前准备", spec.preparation)
-    document.add_heading("教学过程", level=1)
-    table = document.add_table(rows=1, cols=5)
-    table.style = "Table Grid"
-    headers = ["环节", "时间", "教师活动", "学生活动", "评价"]
-    for cell, value in zip(table.rows[0].cells, headers):
-        cell.text = value
-    for section in spec.sections:
-        cells = table.add_row().cells
-        cells[0].text = section.title
-        cells[1].text = f"{section.minutes} 分钟"
-        cells[2].text = "\n".join(f"• {item}" for item in section.teacher_activity)
-        cells[3].text = "\n".join(f"• {item}" for item in section.student_activity)
-        cells[4].text = "\n".join(f"• {item}" for item in section.assessment)
-    _docx_bullets(document, "课后作业", spec.homework)
-    _docx_bullets(document, "教学反思", spec.reflection)
-    _docx_bullets(document, "教师版复核提示", spec.teacher_only_notes)
-    document.add_heading("来源回溯", level=1)
-    document.add_paragraph("、".join(spec.source_refs) or "无")
-    document.save(path)
 
 
 def _render_html(package: LoadedTeachingContentPackage, spec: InteractiveSpec, directory: Path) -> None:
