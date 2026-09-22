@@ -29,6 +29,12 @@ from .vision import load_bailian_api_key
 
 
 DEFAULT_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# 本地文件（file_url 通路）的体积上限。
+# 数值来源：服务端文档摘要（本地文件约 100MB），**未逐字核实** —— 核实后只改这一处。
+# 默认 input_mode=auto 走的正是 file_url，所以这条通路必须有上限：
+# 否则任意大的文件都会被直接交给 SDK/服务端上传。
+MAX_LOCAL_FILE_BYTES = 100 * 1024 * 1024
 DEFAULT_MODEL = "qwen3.7-plus"
 PROMPT_VERSION = "video-understanding-v1"
 SCHEMA_VERSION = "video-understanding-v1"
@@ -561,6 +567,12 @@ class BailianVideoClient:
                 uri = raw
                 digest = input_sha256 or hashlib.sha256(uri.encode("utf-8")).hexdigest()
             elif path is not None and path.is_file():
+                size = path.stat().st_size
+                if size > MAX_LOCAL_FILE_BYTES:
+                    raise VideoRequestError(
+                        "local video exceeds the file_url size limit "
+                        f"({size} bytes > {MAX_LOCAL_FILE_BYTES} bytes)"
+                    )
                 uri = path.resolve().as_uri()
                 digest = input_sha256 or _sha256_file(path)
             else:
@@ -575,8 +587,14 @@ class BailianVideoClient:
             if path is None or not path.is_file():
                 raise VideoRequestError("base64 input mode requires an existing local video file")
             size = path.stat().st_size
-            if size > self.config.max_base64_bytes:
-                raise VideoRequestError("base64 input is limited to short, size-controlled video segments")
+            # base64 会把体积放大约 4/3，必须按**编码后**的体积判定：
+            # 否则"原始字节刚好低于上限"的文件编码后仍会超限。
+            encoded_size = -(-size // 3) * 4
+            if encoded_size > self.config.max_base64_bytes:
+                raise VideoRequestError(
+                    "base64 input is limited to short, size-controlled video segments "
+                    f"(encoded {encoded_size} bytes > {self.config.max_base64_bytes} bytes)"
+                )
             mime_type = mimetypes.guess_type(path.name)[0] or "video/mp4"
             encoded = base64.b64encode(path.read_bytes()).decode("ascii")
             digest = input_sha256 or _sha256_file(path)
