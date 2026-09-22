@@ -864,11 +864,14 @@ def _dashscope_sdk_call(
             stream=False,
             result_format="message",
             response_format=response_format,
-            timeout=timeout_seconds,
+            # SDK 的 HTTP 超时关键字是 request_timeout；传 timeout 会被当成未知
+            # kwargs 塞进请求体 parameters，真正的超时仍取 SDK 默认值（300s），
+            # 配置的 timeout_seconds 完全无效。
+            request_timeout=timeout_seconds,
             max_tokens=max_tokens,
         )
     except TypeError:
-        # Older SDK versions may not expose response_format/timeout.  Keep the
+        # Older SDK versions may not expose response_format/request_timeout.  Keep the
         # strict contract in the prompt and validate the returned JSON locally.
         response = MultiModalConversation.call(
             model=model,
