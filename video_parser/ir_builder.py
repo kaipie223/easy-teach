@@ -574,7 +574,9 @@ def _build_circuit_ir(
     original ASR evidence is never changed; normalized teaching copy carries a
     short raw excerpt and a correction status in its metadata.
     """
-    duration = float(parsed.metadata.duration_seconds or 1101.067)
+    # 时长探测失败时不再猜一个"合理默认时长"：置 0 并在 quality.warnings 里标记
+    # 时间轴不可用，交由人工复核。
+    duration = float(parsed.metadata.duration_seconds or 0.0)
     unit_specs = [
         {
             "key": "path",
@@ -665,7 +667,8 @@ def _build_circuit_ir(
             "key": "summary",
             "title": "总结：用两条电流走路法则分析电路",
             "start": 1050.0,
-            "end": duration,
+            # None 表示"一直到视频结束"，实际秒数由下面的等比映射算出。
+            "end": None,
             "roles": ["summary", "conclusion"],
             "blocks": [
                 ("text", "法则一：电流在电源外部从正极出发，必须找到回到负极的路径；没有回路就是断路。", "corrected", "对应视频开头和结尾反复强调的第一条法则。"),
@@ -678,9 +681,18 @@ def _build_circuit_ir(
     units: list[TeachingUnit] = []
     source_refs: list[str] = []
     correction_count = 0
+    # 模板的时间轴是一组写死的绝对秒数，短片必须等比映射到 [0, duration]：
+    # 直接 min(..., duration) 会把所有单元钳到视频末尾同一瞬间、退化成零长度区间。
+    # 参考末点由模板自身推出（末单元起点 + 与前一单元等长的尾段），不引入默认时长。
+    starts = [float(spec["start"]) for spec in unit_specs]
+    reference_end = (
+        starts[-1] + (starts[-1] - starts[-2]) if len(starts) >= 2 and starts[-1] > 0 else starts[-1]
+    )
+    scale = (duration / reference_end) if reference_end > 0 and duration > 0 else 0.0
     for index, spec in enumerate(unit_specs, start=1):
-        start = min(float(spec["start"]), duration)
-        end = min(max(float(spec["end"]), start), duration)
+        raw_end = reference_end if spec["end"] is None else float(spec["end"])
+        start = round(min(float(spec["start"]), reference_end) * scale, 3)
+        end = round(max(min(raw_end, reference_end) * scale, start), 3)
         window_refs = _circuit_window_evidence(evidence_by_id, start, end)
         window_keyframes = _circuit_window_keyframes(keyframes_by_id, start, end)
         block_values: list[ContentBlock] = []
@@ -791,6 +803,10 @@ def _build_circuit_ir(
     warnings.append(
         "原始 ASR、时间戳和关键帧仍保存在 source/video_parse_result.json；纠正后的内容只写入 IR 的 corrected/inferred block。"
     )
+    if duration <= 0:
+        warnings.append(
+            "视频时长缺失，电路兜底时间轴不可用：各单元时间范围已置零，需人工复核后再使用。"
+        )
     result_conflicts = result_conflicts or []
     candidate_unresolved = candidate_unresolved or []
     verified_candidate_segments = verified_candidate_segments or []
