@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from jsonschema import Draft202012Validator
+from pydantic import ValidationError
 
 from .schemas import (
     CandidateEvidenceInterval,
@@ -490,12 +491,25 @@ class BailianVideoClient:
     ) -> VideoUnderstandingResult:
         local_duration = request.chunk_end_seconds - request.chunk_start_seconds
         chapters: list[VideoChapterCandidate] = []
+        dropped: list[str] = []
         for raw_chapter in payload.get("chapters", []):
-            chapter = VideoChapterCandidate.model_validate(raw_chapter)
-            _validate_local_range(chapter.start_seconds, chapter.end_seconds, local_duration, "chapter")
+            try:
+                chapter = VideoChapterCandidate.model_validate(raw_chapter)
+                _validate_local_range(chapter.start_seconds, chapter.end_seconds, local_duration, "chapter")
+            except (ValidationError, VideoRangeError) as exc:
+                # 单条坏数据（例如 start == end 的零长度区间）只丢这一条。
+                # 服务端 schema 的 start/end 只有 minimum: 0、没有 end > start，
+                # 这类输出"合法但不合理"；而本地 pydantic 要求 end > start，
+                # 一旦整批 model_validate 就会让同分片 90% 可用章节一起作废。
+                dropped.append(f"dropped_chapter_{raw_chapter.get('chapter_id', '?')}: {str(exc).splitlines()[0]}")
+                continue
             intervals: list[CandidateEvidenceInterval] = []
             for interval in chapter.candidate_intervals:
-                _validate_local_range(interval.start_seconds, interval.end_seconds, local_duration, "candidate interval")
+                try:
+                    _validate_local_range(interval.start_seconds, interval.end_seconds, local_duration, "candidate interval")
+                except VideoRangeError as exc:
+                    dropped.append(f"dropped_interval_{interval.interval_id}: {exc}")
+                    continue
                 intervals.append(
                     interval.model_copy(
                         update={
@@ -524,6 +538,8 @@ class BailianVideoClient:
             video_summary=str(payload.get("video_summary") or ""),
             chapters=chapters,
             uncertainties=[str(item) for item in payload.get("uncertainties", [])],
+            # 被跳过的坏区间不静默丢弃，写进 warnings 供人工复核。
+            warnings=dropped,
         )
 
     def _video_content(self, video: str | Path, *, input_sha256: str | None) -> tuple[str, dict[str, Any], str]:
