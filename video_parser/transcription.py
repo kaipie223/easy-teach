@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from functools import lru_cache
 from pathlib import Path
 
 from .schemas import Transcript, TranscriptSegment
-from .text_normalization import to_simplified_chinese
+from .text_normalization import normalization_available, to_simplified_chinese
 from .utils import compact_timecode, ensure_dir, json_path
+
+logger = logging.getLogger(__name__)
 
 
 class TranscriptionError(RuntimeError):
@@ -51,18 +54,23 @@ def transcribe_audio(
             raw_text = segment.text.strip()
             if not raw_text:
                 continue
-            normalized_text = to_simplified_chinese(raw_text)
-            segments.append(
-                TranscriptSegment(
-                    id=f"tr_{index:04d}",
-                    start_seconds=float(segment.start),
-                    end_seconds=float(segment.end),
-                    start=compact_timecode(float(segment.start)),
-                    end=compact_timecode(float(segment.end)),
-                    text=normalized_text,
-                    raw_text=raw_text if raw_text != normalized_text else None,
+            try:
+                # 逐段收集：单个分段失败只跳过该段并记 warning，
+                # 已经跑完的 Whisper 计算不该整段丢弃。
+                normalized_text = to_simplified_chinese(raw_text)
+                segments.append(
+                    TranscriptSegment(
+                        id=f"tr_{index:04d}",
+                        start_seconds=float(segment.start),
+                        end_seconds=float(segment.end),
+                        start=compact_timecode(float(segment.start)),
+                        end=compact_timecode(float(segment.end)),
+                        text=normalized_text,
+                        raw_text=raw_text if raw_text != normalized_text else None,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("跳过转写分段 tr_%04d：%s", index, exc)
     except Exception as exc:  # noqa: BLE001 - wrapped for parser warnings.
         raise TranscriptionError(str(exc)) from exc
 
@@ -84,7 +92,7 @@ def transcribe_audio(
         duration_seconds=getattr(info, "duration", None),
         text=text,
         raw_text=raw_text,
-        text_normalization="simplified_chinese",
+        text_normalization="simplified_chinese" if normalization_available() else "none",
         segments=segments,
         status="completed",
     )
@@ -109,7 +117,7 @@ def transcript_from_manual_text(text: str) -> Transcript:
     return Transcript(
         text=simplified,
         raw_text=normalized,
-        text_normalization="simplified_chinese",
+        text_normalization="simplified_chinese" if normalization_available() else "none",
         segments=[segment],
         status="completed",
     )
