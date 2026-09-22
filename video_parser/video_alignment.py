@@ -216,11 +216,16 @@ def _align_range(
         aligned_end = duration_seconds
         if aligned_end <= aligned_start:
             aligned_end = aligned_start + 0.001
+        # 决策自身必须满足 end > start，否则"拒绝"分支会在构造决策时先抛
+        # ValidationError —— 冲突记下了，可审阅的 rejected 决策却一起丢了。
+        # 真实的非法区间仍然完整记录在 conflicts 的 model_value 里。
+        decision_start = max(0.0, original_start)
+        decision_end = max(original_end, decision_start + 0.001)
         return (
             AlignmentDecision(
                 candidate_id=candidate_id,
-                original_start_seconds=original_start,
-                original_end_seconds=original_end,
+                original_start_seconds=decision_start,
+                original_end_seconds=decision_end,
                 aligned_start_seconds=aligned_start,
                 aligned_end_seconds=aligned_end,
                 score=0.0,
@@ -240,6 +245,9 @@ def _align_range(
     aligned_end = max(0.0, min(aligned_end, duration_seconds))
     if aligned_end <= aligned_start:
         aligned_start, aligned_end = original_start, original_end
+    if aligned_end <= aligned_start:
+        # 对齐后仍为零/负长度时也保证可构造（end > start），避免整条决策丢失。
+        aligned_end = aligned_start + 0.001
 
     components = _alignment_components(
         original_start=original_start,
