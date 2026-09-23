@@ -314,15 +314,21 @@ def _quality_report(parsed: VideoParseResult, ir: TeachingContentIR, assets: lis
 def _keyframe_metrics(parsed: VideoParseResult) -> dict[str, float]:
     sample_frames = [item for item in parsed.keyframes if item.kind == "sample"]
     hashes: list[str] = []
+    unreadable = 0
     for frame in sample_frames:
         try:
             hashes.append(file_sha256(Path(frame.path)))
         except (OSError, ValueError):
-            hashes.append(f"missing:{frame.id}")
+            # 读不到的帧不能算"每帧都不同"：以前它被压成唯一的 'missing:<id>'
+            # 占位符参与去重，"全部读不到"于是报成 unique=100%、duplicate_rate=0，
+            # 质量指标反向变好、真实故障被掩盖。这里把它排除在统计之外并单独计数。
+            unreadable += 1
     unique_count = len(set(hashes))
     duplicate_count = max(0, len(hashes) - unique_count)
     return {
         "sample_keyframe_count": float(len(sample_frames)),
+        "sample_keyframe_readable_count": float(len(hashes)),
+        "sample_keyframe_unreadable_count": float(unreadable),
         "sample_keyframe_unique_count": float(unique_count),
         "keyframe_duplicate_count": float(duplicate_count),
         "keyframe_duplicate_rate": round(duplicate_count / len(hashes), 6) if hashes else 0.0,
