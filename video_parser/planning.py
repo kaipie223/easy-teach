@@ -236,13 +236,17 @@ def build_slide_deck_spec(
 
 def build_lesson_plan_spec(package: LoadedTeachingContentPackage, plan: DemoGenerationPlan) -> LessonPlanSpec:
     sections: list[LessonPlanSection] = []
-    per_stage = max(1, plan.estimated_minutes // max(1, len(plan.stages)))
-    for stage in plan.stages:
+    # 各环节时长必须与声明时长对得上：整除后把余数摊到前几节。
+    # 以前是"N 节 × 向下取整"，合计会少于标题页写的声明时长（20 分钟写成 16 分钟）。
+    total_minutes = max(0, int(plan.estimated_minutes))
+    stage_count = max(1, len(plan.stages))
+    base_minutes, remainder = divmod(total_minutes, stage_count)
+    for index, stage in enumerate(plan.stages):
         sections.append(
             LessonPlanSection(
                 section_id=stage.stage_id,
                 title=stage.title,
-                minutes=per_stage,
+                minutes=base_minutes + (1 if index < remainder else 0),
                 teacher_activity=[f"结合来源证据讲解：{item}" for item in stage.content[:3]] or ["展示对应关键帧并引导观察。"],
                 student_activity=["记录要点并用自己的话复述。"],
                 assessment=[f"检查学生是否能说明“{stage.title}”的核心含义。"],
