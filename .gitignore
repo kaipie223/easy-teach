@@ -42,6 +42,21 @@ playwright-report/
 test-results/
 .qa-m6/
 
+# 本地备份、旧文件与临时产物（含历史 patch、探针媒体，不随仓库走）
+.local-backup/
+*.bak
+_openapi.json
+
+# 本地数据库：里面有真实用户数据（邮箱、口令哈希），绝不入库
+*.db
+*.sqlite3
+
+# 运行时数据：向量库与缓存（可由知识库重新索引得到）
+easy-teach-runtime/
+
+# 根部遗留的原型草稿（真正的源码在 backend/ 与 frontend/）
+/src/
+
 # ChromaDB
 chroma_data/
 knowledge-base/.managed/
