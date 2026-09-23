@@ -518,6 +518,12 @@ def _run_video_understanding(
     effective_chunk_seconds = _effective_video_chunk_seconds(config)
     chunk_ranges = _video_chunk_ranges(duration_seconds, effective_chunk_seconds, config.chunk_overlap_seconds)
     chunk_dir = ensure_dir(run_dir / "video_understanding_chunks") if len(chunk_ranges) > 1 else None
+    if chunk_dir is not None:
+        # S6.6：重跑时先清掉上一轮留下的分片。分片文件名含 start/end，改参数重跑
+        # 会生成新名字而不是覆盖，目录因此线性膨胀（CRF23 重编码体积与源相当）。
+        # 清理发生在本次任何分片写入之前，不会删到正在使用的分片。
+        for stale_chunk in chunk_dir.glob("chunk_*.mp4"):
+            stale_chunk.unlink()
     chunk_artifacts: list[dict] = []
     chunk_conflicts: list[ConflictItem] = []
     failed_chunks = 0
