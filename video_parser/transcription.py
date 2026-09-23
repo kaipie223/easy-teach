@@ -16,6 +16,11 @@ class TranscriptionError(RuntimeError):
     """Raised when faster-whisper cannot transcribe audio."""
 
 
+# 手工文本没有真实时间轴时使用的占位长度（秒）：只用于满足"转写段必须正长度"
+# 这一不变量，不代表任何真实时间信息。
+MANUAL_TEXT_NOMINAL_SECONDS = 0.001
+
+
 @lru_cache(maxsize=4)
 def load_whisper_model(model_size: str, device: str = "cpu", compute_type: str = "int8"):
     try:
@@ -100,17 +105,27 @@ def transcribe_audio(
     return transcript
 
 
-def transcript_from_manual_text(text: str) -> Transcript:
+def transcript_from_manual_text(text: str, *, duration_seconds: float | None = None) -> Transcript:
     normalized = text.strip()
     if not normalized:
         return Transcript(status="not_requested")
     simplified = to_simplified_chinese(normalized)
+    # 手工文本没有真实时间轴，但转写段必须满足"正长度"这一不变量：
+    # _normalize_asr_segments 与 schemas 的区间约束都要求 end > start，
+    # 主路径（ASR）同样如此；以前这里写死 0.0/0.0，两条路径标准不一致。
+    # 调用方若知道真实时长可以传入，否则只给一个最小正长度占位，
+    # 不编造一个看起来可信的时间轴。
+    end_seconds = (
+        float(duration_seconds)
+        if duration_seconds is not None and duration_seconds > 0
+        else MANUAL_TEXT_NOMINAL_SECONDS
+    )
     segment = TranscriptSegment(
         id="tr_0001",
         start_seconds=0.0,
-        end_seconds=0.0,
-        start="00:00",
-        end="00:00",
+        end_seconds=end_seconds,
+        start=compact_timecode(0.0),
+        end=compact_timecode(end_seconds),
         text=simplified,
         raw_text=normalized if normalized != simplified else None,
     )
