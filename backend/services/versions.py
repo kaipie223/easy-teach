@@ -30,7 +30,10 @@ COLLECTIONS = {
 }
 
 ALLOWED_FIELDS = {
-    "slides": {"title", "purpose", "layout", "bullets", "speaker_notes"},
+    # `image` is bound through a patch rather than by the model: a picture is a
+    # private upload, so only the owning project may reference it and the ID is
+    # resolved (and dropped when it does not belong) at render time.
+    "slides": {"title", "purpose", "layout", "bullets", "speaker_notes", "image"},
     "lesson_sections": {
         "title",
         "duration_minutes",
@@ -391,7 +394,9 @@ def apply_operations(
                     status_code=422,
                     details={"allowed": sorted(ALLOWED_FIELDS[collection_name])},
                 )
-            if operation.value is None:
+            # `image` is the one field where an explicit null carries meaning:
+            # it removes the picture from the slide.
+            if operation.value is None and field != "image":
                 raise ApiError(
                     "replace 操作必须提供 value",
                     code="REVISION_VALUE_REQUIRED",

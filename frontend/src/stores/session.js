@@ -51,9 +51,16 @@ export const useSessionStore = defineStore('session', () => {
     // 如果最后一条已经是同类型的结构化消息，替换
     if (last && last.type === type) {
       last.data = data
-    } else {
-      addMessage({ role: 'assistant', type, data, content: '' })
+      return
     }
+    // 追问／确认的正文刚刚流式展示过。把结构化数据挂到那条气泡上，而不是再建一条
+    // 消息——否则同一句话会先作为气泡出现一次、又在卡片里出现一次。
+    if (last && last.role === 'assistant' && !last.type && last.content) {
+      last.type = type
+      last.data = data
+      return
+    }
+    addMessage({ role: 'assistant', type, data, content: '' })
   }
 
   /** 清空消息列表 */

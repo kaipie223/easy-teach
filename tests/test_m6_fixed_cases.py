@@ -210,9 +210,9 @@ def test_fixed_case_exports_contain_visible_content(tmp_path, monkeypatch, case)
     plan, _ = build_case_plan(case, monkeypatch)
     payload = plan.model_dump(mode="json")
 
-    pptx_path = Path(asyncio.run(generate_pptx(payload, output_name=f"{case['id']}.pptx")))
-    docx_path = Path(asyncio.run(generate_docx(payload, output_name=f"{case['id']}.docx")))
-    html_path = Path(asyncio.run(generate_html(payload, output_name=f"{case['id']}.html")))
+    pptx_path = Path(generate_pptx(payload, output_name=f"{case['id']}.pptx"))
+    docx_path = Path(generate_docx(payload, output_name=f"{case['id']}.docx"))
+    html_path = Path(generate_html(payload, output_name=f"{case['id']}.html"))
 
     presentation = Presentation(str(pptx_path))
     visible_slide_text = "\n".join(

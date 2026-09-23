@@ -58,10 +58,19 @@
         <el-empty v-if="messages.length === 0" description="开始对话吧" />
 
         <template v-for="(msg, idx) in messages" :key="msg.id">
+          <!-- 正文气泡先画：流式追问与它下面的卡片是同一条消息 -->
+          <MessageBubble
+            v-if="msg.content"
+            :role="msg.role"
+            :content="msg.content"
+            :timestamp="msg.timestamp"
+            :typing="idx === messages.length - 1 && msg.role === 'assistant' && sseActive"
+          />
           <!-- 追问卡片 -->
           <QuestionCard
             v-if="msg.type === 'question'"
             :data="msg.data"
+            :prompt="msg.content ? '' : null"
             @submit="answer => handleAnswerQuestion(answer)"
             @skip="handleSkipQuestion"
           />
@@ -72,14 +81,6 @@
             @confirm="handleConfirm"
             @modify="handleModify"
           />
-          <!-- 普通消息气泡 -->
-          <MessageBubble
-            v-else
-            :role="msg.role"
-            :content="msg.content"
-            :timestamp="msg.timestamp"
-            :typing="idx === messages.length - 1 && msg.role === 'assistant' && sseActive"
-          />
         </template>
       </div>
 
@@ -89,6 +90,7 @@
           ref="inputRef"
           :disabled="sseActive"
           :sending="sending"
+          :recording="voiceRecording"
           :show-voice="true"
           @send="handleSend"
           @toggle-voice="toggleVoice"
@@ -97,6 +99,8 @@
           v-if="voiceVisible"
           :session-id="sessionId"
           :show-label="true"
+          :auto-start="true"
+          @recording="voiceRecording = $event"
           @transcribed="handleVoiceTranscribed"
         />
         <p class="chat-hint">Enter 发送 · Shift+Enter 换行</p>
@@ -143,6 +147,7 @@ const sending = ref(false)
 const error = ref('')
 const sseActive = ref(false)
 const voiceVisible = ref(false)
+const voiceRecording = ref(false)
 const briefSaving = ref(false)
 const briefConfirming = ref(false)
 const aiError = ref(null)
@@ -202,30 +207,76 @@ async function startInitialConversation() {
   await connectAIStream(`/api/v1/sessions/${sessionId.value}/start`, {}, { initial: true })
 }
 
+// ── 打字机 ──────────────────────────────────────
+
+// 模型把 reply 限制在 60 字内，几十毫秒就发完了：收到就 append 的话肉眼看不出逐字
+// 效果，看起来仍像一次性弹出。所以把 chunk 排进队列，按固定节奏刷出。
+const TYPE_TICK_MS = 30
+// 整段播完的目标时长，长回复不至于拖太久
+const TYPE_TARGET_MS = 1200
+let typeQueue = []
+let typeTimer = null
+
+function stopTypewriter() {
+  if (typeTimer !== null) {
+    window.clearInterval(typeTimer)
+    typeTimer = null
+  }
+}
+
+/** 把还没播完的字一次补齐：卡片不能抢在正文前面出现，结束时也不能漏字。 */
+function flushTypewriter() {
+  stopTypewriter()
+  if (typeQueue.length) {
+    sessionStore.appendToLastMessage(typeQueue.join(''))
+    typeQueue = []
+  }
+}
+
+function enqueueText(chunk) {
+  if (!chunk) return
+  typeQueue.push(...chunk)
+  if (typeTimer !== null) return
+  typeTimer = window.setInterval(() => {
+    if (!typeQueue.length) {
+      stopTypewriter()
+      return
+    }
+    // 每拍刷出足够多的字，让整段在目标时长内播完
+    const perTick = Math.max(1, Math.ceil(typeQueue.length / (TYPE_TARGET_MS / TYPE_TICK_MS)))
+    sessionStore.appendToLastMessage(typeQueue.splice(0, perTick).join(''))
+    scrollToBottom()
+  }, TYPE_TICK_MS)
+}
+
 async function connectAIStream(url, body, { initial = false } = {}) {
   if (sseActive.value) return
   sseActive.value = true
   const client = new SSEClient(url, {
     onText: (chunk) => {
-      sessionStore.appendToLastMessage(chunk)
-      scrollToBottom()
+      enqueueText(chunk)
     },
     onQuestion: (data) => {
+      flushTypewriter()
       sessionStore.applyBriefEvent(data.brief)
+      // 结构化数据挂到刚流式展示完的那条气泡上，不另起一条，避免同一句出现两次
       sessionStore.addStructuredMessage('question', data)
       scrollToBottom()
     },
     onConfirm: (data) => {
+      flushTypewriter()
       sessionStore.applyBriefEvent(data.brief)
       sessionStore.addStructuredMessage('confirm', data)
       scrollToBottom()
     },
     onDone: () => {
+      flushTypewriter()
       sseActive.value = false
       if (initial) initialStartFailed.value = false
     },
     onError: (err) => {
       console.error('SSE 错误:', err)
+      flushTypewriter()
       sseActive.value = false
       aiError.value = {
         message: '对话连接中断',
@@ -234,6 +285,7 @@ async function connectAIStream(url, body, { initial = false } = {}) {
       if (initial) initialStartFailed.value = true
     },
     onServiceError: (details) => {
+      flushTypewriter()
       sseActive.value = false
       aiError.value = details
       if (initial) initialStartFailed.value = true
@@ -329,6 +381,8 @@ function scrollToBottom() {
 // ── 生命周期 ──────────────────────────────────
 
 onBeforeUnmount(() => {
+  // 离开页面时停掉打字机，否则定时器会继续往已清空的会话里追加
+  stopTypewriter()
   sessionStore.resetSession()
 })
 

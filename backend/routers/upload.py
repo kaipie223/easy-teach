@@ -4,17 +4,17 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from sqlalchemy.orm import Session as DBSession
 
 from backend.config import settings
 from backend.core.errors import ApiError
-from backend.core.ownership import get_file_for_user, get_session_for_user
+from backend.core.ownership import get_file_for_user, get_project_for_user, get_session_for_user
 from backend.core.security import get_current_user
 from backend.db.database import get_db
 from backend.models.file import FileRecord
 from backend.models.user import User
-from backend.schemas import FileInfo
+from backend.schemas import FileInfo, OutputFile
 from backend.services.limits import remaining_storage_bytes
 from backend.services.uploads import UploadSizeExceeded, stream_upload_to_path
 
@@ -133,3 +133,40 @@ def get_file_info(
         upload_time=f.upload_time,
         ref_description=f.ref_description,
     )
+
+
+@router.get("/projects/{project_id}/files", response_model=list[OutputFile])
+def list_project_files(
+    project_id: str,
+    artifact_version_id: str | None = Query(default=None, max_length=64),
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List the files a generation task produced, optionally for one version.
+
+    返回 `OutputFile` 而不是 `FileInfo`：`FileInfo.file_type` 是 `pdf|word|ppt|
+    image|video` 的受限枚举，只描述教师上传的资料，而生成产物的类型是
+    `pptx|docx|html`，用 `FileInfo` 会在序列化时直接失败。
+
+    Filtered on ``ref_description == "generated"`` so teacher uploads never show up
+    here. The version filter is what lets 成果编辑 answer "这个版本生成过哪些文件"：
+    任务 ID 是一次性的，文件记录才是持久的，所以刷新页面后产物依然在。
+    """
+    project = get_project_for_user(db, project_id, user)
+    query = db.query(FileRecord).filter(
+        FileRecord.project_id == project.project_id,
+        FileRecord.ref_description == "generated",
+    )
+    if artifact_version_id:
+        query = query.filter(FileRecord.artifact_version_id == artifact_version_id)
+    records = query.order_by(FileRecord.upload_time.desc()).all()
+    return [
+        OutputFile(
+            file_id=record.file_id,
+            file_type=record.file_type,
+            file_name=record.original_name,
+            size_kb=record.size_kb,
+            download_url=f"/api/v1/download/{record.file_id}",
+        )
+        for record in records
+    ]

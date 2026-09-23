@@ -109,6 +109,8 @@ class ExportRecord(Base):
     )
     format = Column(String(16), nullable=False)
     status = Column(String(32), nullable=False, default="pending", index=True)
+    stage = Column(String(48), nullable=True)          # services/progress.py 的阶段键
+    stage_started_at = Column(DateTime(timezone=True), nullable=True)
     file_id = Column(String(40), ForeignKey("files.file_id", ondelete="SET NULL"), nullable=True)
     path = Column(String(1024), nullable=True)
     file_name = Column(String(255), nullable=True)

@@ -92,6 +92,22 @@ class FastEmbedEmbeddingFunction:
         except Exception as exc:
             raise EmbeddingModelError("文本向量化失败，请稍后重试") from exc
 
+    def name(self) -> str:
+        """Chroma 1.x 调用 `name()` 来判断集合配置里的向量函数是否冲突。
+
+        旧版 Chroma 没有这个要求，所以本项目钉在 0.5.3 时缺失也能跑；升级到 1.x 后
+        缺少它会直接 AttributeError。
+        """
+        return "fastembed-bge-small-zh-v1.5"
+
+    def embed_query(self, input: Sequence[str]) -> list[list[float]]:
+        """Chroma 1.x 的查询路径调用 `embed_query`。
+
+        协议基类把这个方法默认转发给 `__call__`，但本类没有继承它，所以这里显式转发，
+        与 Chroma 的约定保持一致。
+        """
+        return self.__call__(input)
+
 
 def reset_embedding_model_cache() -> None:
     """Release cached ONNX sessions, primarily for tests and controlled reloads."""

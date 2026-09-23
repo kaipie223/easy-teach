@@ -32,7 +32,7 @@ def test_session_and_sse_contract(client, stub_intent_analyzer):
     assert chat.status_code == 200
     assert "event: question" in chat.text
     assert '"content"' in chat.text
-    assert "event: text" in chat.text
+    assert "event: delta" in chat.text
 
 
 def test_error_envelope_is_stable(client):

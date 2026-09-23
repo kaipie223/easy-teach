@@ -193,6 +193,9 @@ def test_valid_video_is_rejected_while_capability_is_disabled(client, tmp_path, 
 
 
 def test_image_is_saved_without_fake_vision_evidence(client, tmp_path, monkeypatch):
+    # 本用例验证"未配置视觉时不伪装识别成功"，所以显式关闭视觉：否则本地 .env
+    # 一旦启用视觉模型，这里就会变成一次真实的付费调用，测试结果也随环境漂移。
+    monkeypatch.setattr(settings, "deepseek_vision_model", "")
     monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
     image_bytes = io.BytesIO()
     Image.new("RGB", (8, 6), color="white").save(image_bytes, format="PNG")
@@ -225,6 +228,180 @@ def test_image_is_saved_without_fake_vision_evidence(client, tmp_path, monkeypat
     )
     assert evidence.status_code == 200
     assert evidence.json() == []
+
+
+def test_image_description_becomes_evidence_when_vision_is_configured(
+    client, tmp_path, monkeypatch
+):
+    """配置视觉模型后，图片描述要成为正常证据，而不是只留一行"未配置"。"""
+    monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
+    monkeypatch.setattr(
+        "backend.services.materials.describe_image",
+        lambda path: {
+            "description": "弹簧测力计在空气和水中两次读数的对比照片",
+            "keywords": ["弹簧测力计", "浮力"],
+            "suggested_use": "讲解称重法测浮力",
+            "model_name": "deepseek-v4-flash-vision-exp",
+            "prompt_version": "image-vision-v1",
+        },
+    )
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (8, 6), color="white").save(image_bytes, format="PNG")
+    headers = register(client, "m3-image-vision@example.com")
+    project_id = client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={"title": "图片视觉测试"},
+    ).json()["project_id"]
+
+    uploaded = client.post(
+        f"/api/v1/projects/{project_id}/materials",
+        headers=headers,
+        files={"file": ("diagram.png", image_bytes.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    material_id = uploaded.json()["material_id"]
+
+    analysis = client.get(f"/api/v1/materials/{material_id}/analysis", headers=headers)
+    assert analysis.status_code == 200
+    result = analysis.json()["result_json"]
+    assert result["vision_status"] == "ready"
+    assert result["description"] == "弹簧测力计在空气和水中两次读数的对比照片"
+    assert result["keywords"] == ["弹簧测力计", "浮力"]
+
+    evidence = client.get(f"/api/v1/materials/{material_id}/evidence", headers=headers)
+    assert evidence.status_code == 200
+    chunks = evidence.json()
+    assert chunks, "视觉描述必须成为可检索证据"
+    assert any("两次读数" in item["text"] for item in chunks)
+
+
+def test_image_vision_failure_is_reported_instead_of_faked(client, tmp_path, monkeypatch):
+    """视觉调用失败要如实标记，不能伪装成识别成功。"""
+    from backend.services.image_vision import ImageVisionError
+
+    monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
+
+    def broken(path):
+        raise ImageVisionError("图片理解调用失败：APIConnectionError")
+
+    monkeypatch.setattr("backend.services.materials.describe_image", broken)
+    image_bytes = io.BytesIO()
+    Image.new("RGB", (8, 6), color="white").save(image_bytes, format="PNG")
+    headers = register(client, "m3-image-vision-broken@example.com")
+    project_id = client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={"title": "视觉失败测试"},
+    ).json()["project_id"]
+
+    uploaded = client.post(
+        f"/api/v1/projects/{project_id}/materials",
+        headers=headers,
+        files={"file": ("diagram.png", image_bytes.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    material_id = uploaded.json()["material_id"]
+
+    analysis = client.get(f"/api/v1/materials/{material_id}/analysis", headers=headers)
+    assert analysis.status_code == 200
+    result = analysis.json()["result_json"]
+    assert result["vision_status"] == "failed"
+    assert "图片理解调用失败" in result["warning"]
+
+    evidence = client.get(f"/api/v1/materials/{material_id}/evidence", headers=headers)
+    assert evidence.json() == []
+
+
+def test_list_project_images_exposes_descriptions_for_the_model(
+    client, db_session_factory, tmp_path
+):
+    """候选清单要带上视觉描述与教师备注，且只含本项目可用的图片。"""
+    from datetime import datetime, timezone
+
+    from backend.models.material import Material, MaterialAnalysis
+    from backend.services.materials import list_project_images
+
+    signup = client.post(
+        "/api/v1/auth/register",
+        json={
+            "email": "m3-image-list@example.com",
+            "password": "password123",
+            "display_name": "M3 Image List",
+        },
+    )
+    account = signup.json()
+    headers = {"Authorization": f"Bearer {account['access_token']}"}
+    project_id = client.post(
+        "/api/v1/projects", headers=headers, json={"title": "候选清单测试"}
+    ).json()["project_id"]
+    other_project_id = client.post(
+        "/api/v1/projects", headers=headers, json={"title": "另一个项目"}
+    ).json()["project_id"]
+
+    figure = tmp_path / "figure.png"
+    Image.new("RGB", (8, 6), color="white").save(figure)
+
+    db = db_session_factory()
+    try:
+        def material(material_id, project, **extra):
+            return Material(
+                material_id=material_id,
+                owner_id=account["user"]["user_id"],
+                project_id=project,
+                original_name=f"{material_id}.png",
+                file_type="image",
+                stored_path=str(figure),
+                size_bytes=1,
+                checksum_sha256=material_id,
+                **extra,
+            )
+
+        db.add_all(
+            [
+                material("mat_done", project_id, ref_description="我自己写的备注"),
+                material("mat_other_project", other_project_id),
+                material("mat_archived", project_id, deleted_at=datetime.now(timezone.utc)),
+            ]
+        )
+        db.add(
+            MaterialAnalysis(
+                analysis_id="analysis_mat_done",
+                material_id="mat_done",
+                run_number=1,
+                parser_name="image_vision",
+                status="completed",
+                result_json={
+                    "vision_status": "ready",
+                    "description": "二叉树三种遍历的对照示意图",
+                    "keywords": ["二叉树", "遍历"],
+                },
+            )
+        )
+        # 非图片资料不能进入配图候选
+        db.add(
+            Material(
+                material_id="mat_pdf",
+                owner_id=account["user"]["user_id"],
+                project_id=project_id,
+                original_name="notes.pdf",
+                file_type="pdf",
+                stored_path=str(figure),
+                size_bytes=1,
+                checksum_sha256="mat_pdf",
+            )
+        )
+        db.commit()
+
+        images = list_project_images(db, project_id)
+
+        assert [item["material_id"] for item in images] == ["mat_done"]
+        assert images[0]["description"] == "二叉树三种遍历的对照示意图"
+        assert images[0]["teacher_note"] == "我自己写的备注"
+        assert images[0]["keywords"] == ["二叉树", "遍历"]
+        assert images[0]["vision_status"] == "ready"
+    finally:
+        db.close()
 
 
 def test_video_parse_result_is_mapped_to_material_service(tmp_path, monkeypatch):

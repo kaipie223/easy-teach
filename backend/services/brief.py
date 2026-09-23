@@ -36,6 +36,9 @@ FIELD_LABELS = {
 
 def empty_content() -> dict[str, Any]:
     return {
+        "course_name": "",
+        "subject": "",
+        "grade": "",
         "teaching_goal": "",
         "target_audience": "",
         "duration_minutes": 45,
@@ -188,6 +191,31 @@ def get_latest_brief(
     else:
         return None
     return query.order_by(TeachingBrief.version.desc(), TeachingBrief.created_at.desc()).first()
+
+
+def get_confirmed_brief(
+    db: DBSession,
+    *,
+    project_id: str | None = None,
+) -> TeachingBrief | None:
+    """Return the newest confirmed brief, ignoring drafts opened after it.
+
+    Confirming locks one brief, but any later chat turn or inline edit opens a
+    new draft version on top of it. Consumers that need an approved requirement
+    sheet must look for the confirmed row instead of whichever row is newest,
+    otherwise a single follow-up message silently invalidates the confirmation.
+    """
+    if not project_id:
+        return None
+    return (
+        db.query(TeachingBrief)
+        .filter(
+            TeachingBrief.project_id == project_id,
+            TeachingBrief.status == "confirmed",
+        )
+        .order_by(TeachingBrief.version.desc(), TeachingBrief.created_at.desc())
+        .first()
+    )
 
 
 def _next_version(db: DBSession, project_id: str | None, session_id: str | None) -> int:

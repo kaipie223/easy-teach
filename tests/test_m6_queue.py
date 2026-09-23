@@ -59,9 +59,18 @@ def test_task_claim_updates_heartbeat_and_progress():
         assert task.started_at is not None
         assert task.heartbeat_at is not None
 
-        touch_task(db, task, 45)
-        assert task.progress == 45
+        # 百分比由阶段派生，调用方不再手挑数字
+        touch_task(db, task, "pptx")
+        assert task.stage == "pptx"
+        assert task.progress == 78
+        assert task.stage_started_at is not None
         assert task.updated_at is not None
+
+        # 蓝图子阶段只改写"当前在做什么"，不移动步骤
+        touch_task(db, task, "plan", detail="review")
+        assert task.stage == "plan"
+        assert task.stage_label == "AI 正在审校教学事实"
+        assert task.progress == 61
     finally:
         db.close()
 

@@ -22,7 +22,10 @@ class Task(Base):
     session_id = Column(String, nullable=False)
     task_type = Column(String, nullable=False, default="generation")  # generation / export
     status = Column(String, default="pending")        # pending / processing / completed / failed
-    progress = Column(Integer, default=0)             # 0-100
+    progress = Column(Integer, default=0)             # 0-100，由阶段派生
+    stage = Column(String(48), nullable=True)         # services/progress.py 的阶段键
+    stage_label = Column(String(128), nullable=True)  # 比步骤更细的当前动作
+    stage_started_at = Column(DateTime(timezone=True), nullable=True)
     retry_count = Column(Integer, nullable=False, default=0)
     max_retries = Column(Integer, nullable=False, default=2)
     celery_task_id = Column(String(255), nullable=True)

@@ -22,6 +22,14 @@
     <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false">
       <template v-if="canUseTemplate" #default><el-button size="small" @click="rebuildPlan('template')">使用基础模板</el-button></template>
     </el-alert>
+    <StageProgress
+      v-if="loading"
+      :percent="stagePercent"
+      :label="stageLabel"
+      :steps="stageList"
+      :current="stageKey"
+      :started-at="stageStartedAt"
+    />
     <el-skeleton v-if="loading && !plan" :rows="8" animated />
 
     <template v-else-if="plan && content">
@@ -121,7 +129,9 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Check, CircleCheck, Close, EditPen, MagicStick, Refresh } from '@element-plus/icons-vue'
-import { buildCoursewarePlan, createVersionExports, fetchArtifactVersions, fetchCoursewarePlan, saveCoursewarePlanRevision } from '@/api'
+import { createVersionExports, fetchArtifactVersions, fetchCoursewarePlan, saveCoursewarePlanRevision } from '@/api'
+import StageProgress from '@/components/progress/StageProgress.vue'
+import { SSEClient } from '@/utils/sse'
 import { useProjectStore } from '@/stores/project'
 
 const router = useRouter()
@@ -135,6 +145,12 @@ const saving = ref(false)
 const generating = ref(false)
 const errorMessage = ref('')
 const canUseTemplate = ref(false)
+const stageLabel = ref('')
+const stagePercent = ref(0)
+const stageKey = ref('')
+const stageList = ref([])
+// 已用时长纯前端算，后端只需要给开始时刻
+const stageStartedAt = ref(null)
 const content = computed(() => editing.value ? draft.value : plan.value?.content)
 
 function clone(value) { return JSON.parse(JSON.stringify(value)) }
@@ -164,6 +180,48 @@ async function saveRevision() {
   } finally { saving.value = false }
 }
 
+/** 把 SSE 错误包装成与 axios 同构的形状，调用方的 catch 逻辑无需改动。 */
+function streamError(details) {
+  return { response: { data: { error: details } } }
+}
+
+/**
+ * 通过 SSE 生成教学蓝图：生成期间实时展示阶段文案，结束时拿到完整蓝图。
+ * 生成通常需要一到数分钟，流式阶段反馈避免页面长时间无响应。
+ */
+async function buildPlanWithProgress(options) {
+  let failure = null
+  let result = null
+  stageLabel.value = '正在准备生成教学蓝图……'
+  stagePercent.value = 0
+  stageKey.value = ''
+  stageList.value = []
+  stageStartedAt.value = new Date()
+
+  const client = new SSEClient(`/api/v1/projects/${projectId.value}/plan`, {
+    onProgress: (payload) => {
+      stageLabel.value = payload?.stage_label || payload?.label || stageLabel.value
+      stagePercent.value = payload?.percent ?? stagePercent.value
+      stageKey.value = payload?.stage || stageKey.value
+      if (payload?.stages?.length) stageList.value = payload.stages
+    },
+    onResult: (payload) => { result = payload },
+    onServiceError: (details) => { failure = streamError(details) },
+    onError: () => { failure = streamError({ code: 'PLAN_STREAM_DISCONNECTED', message: '生成连接中断，请重试' }) },
+  })
+
+  await client.connect({
+    force_rebuild: Boolean(options.forceRebuild),
+    generation_mode: options.generationMode || 'ai',
+    allow_template_fallback: Boolean(options.allowTemplateFallback),
+  })
+  stageLabel.value = ''
+
+  if (failure) throw failure
+  if (!result) throw streamError({ code: 'PLAN_STREAM_INCOMPLETE', message: '教学蓝图生成未完成，请重试' })
+  return { data: result }
+}
+
 async function loadPlan() {
   if (!projectId.value) { errorMessage.value = '缺少项目 ID，请从项目会话进入教学蓝图'; return }
   loading.value = true
@@ -171,7 +229,7 @@ async function loadPlan() {
   canUseTemplate.value = false
   try {
     try { plan.value = (await fetchCoursewarePlan(projectId.value)).data }
-    catch (error) { if (error.response?.status !== 404) throw error; plan.value = (await buildCoursewarePlan(projectId.value, { generationMode: 'ai' })).data }
+    catch (error) { if (error.response?.status !== 404) throw error; plan.value = (await buildPlanWithProgress({ generationMode: 'ai' })).data }
     cancelEditing()
   } catch (error) {
     errorMessage.value = error.response?.data?.error?.message || '教学蓝图加载失败，请先确认需求'
@@ -185,7 +243,7 @@ async function rebuildPlan(generationMode) {
   errorMessage.value = ''
   canUseTemplate.value = false
   try {
-    plan.value = (await buildCoursewarePlan(projectId.value, { forceRebuild: true, generationMode })).data
+    plan.value = (await buildPlanWithProgress({ forceRebuild: true, generationMode })).data
     cancelEditing()
     ElMessage.success(generationMode === 'ai' ? 'AI 教学蓝图已生成' : '基础模板蓝图已生成')
   } catch (error) {

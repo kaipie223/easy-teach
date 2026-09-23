@@ -1,0 +1,60 @@
+# ============================================
+# easy-teach Docker Compose（开发模式）
+# 支持热重载，代码修改即时生效
+# 启动: docker compose -f docker-compose.dev.yml up -d
+# ============================================
+
+services:
+  # ---------- FastAPI 后端（热重载）----------
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: easy-teach-backend-dev
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=sqlite:////app/data/easy_teach.db
+      - UPLOAD_DIR=/app/uploads
+      - CHROMA_PERSIST_DIR=/app/data/chroma
+    volumes:
+      # 挂载源码目录 → 修改代码即时生效
+      - ./backend:/app
+      - backend_data:/app/data
+      - uploads_data:/app/uploads
+      - ./knowledge-base:/app/knowledge-base:ro
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - easy-teach-net
+
+  # ---------- Vue 前端（Vite 热重载）----------
+  frontend:
+    image: node:20-alpine
+    container_name: easy-teach-frontend-dev
+    restart: unless-stopped
+    working_dir: /app
+    ports:
+      - "${FRONTEND_PORT:-5173}:5173"
+    environment:
+      # Vite 代理目标 → 指向 Docker 内的后端容器
+      - VITE_API_TARGET=http://backend:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules   # 匿名卷：避免覆盖宿主机 node_modules
+    command: >
+      sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    depends_on:
+      - backend
+    networks:
+      - easy-teach-net
+
+volumes:
+  backend_data:
+  uploads_data:
+
+networks:
+  easy-teach-net:
+    driver: bridge

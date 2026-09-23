@@ -41,6 +41,46 @@ def upgrade() -> None:
     _renumber("courseware_plans", "plan_id")
     _renumber("artifact_versions", "artifact_version_id")
 
+    if op.get_bind().dialect.name == "sqlite":
+        # SQLite cannot add a constraint in place, so Alembic's batch mode
+        # recreates the table from reflected DDL. Databases migrated by older
+        # Alembic/SQLAlchemy releases store legacy column defaults as
+        # double-quoted identifiers (for example
+        # `quality_status VARCHAR(32) DEFAULT "pending"`), and SQLite rejects
+        # those as non-constant defaults while recreating the table. A unique
+        # index enforces exactly the same rule without touching the columns.
+        op.create_index(
+            "uq_teaching_briefs_project_version",
+            "teaching_briefs",
+            ["project_id", "version"],
+            unique=True,
+        )
+        op.create_index(
+            "uq_teaching_briefs_session_version",
+            "teaching_briefs",
+            ["session_id", "version"],
+            unique=True,
+        )
+        op.drop_index(
+            "ix_courseware_plans_project_version", table_name="courseware_plans"
+        )
+        op.create_index(
+            "uq_courseware_plans_project_version",
+            "courseware_plans",
+            ["project_id", "version"],
+            unique=True,
+        )
+        op.drop_index(
+            "ix_artifact_versions_project_version", table_name="artifact_versions"
+        )
+        op.create_index(
+            "uq_artifact_versions_project_version",
+            "artifact_versions",
+            ["project_id", "version"],
+            unique=True,
+        )
+        return
+
     with op.batch_alter_table("teaching_briefs") as batch_op:
         batch_op.create_unique_constraint(
             "uq_teaching_briefs_project_version", ["project_id", "version"]
@@ -63,6 +103,31 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if op.get_bind().dialect.name == "sqlite":
+        op.drop_index(
+            "uq_artifact_versions_project_version", table_name="artifact_versions"
+        )
+        op.create_index(
+            "ix_artifact_versions_project_version",
+            "artifact_versions",
+            ["project_id", "version"],
+        )
+        op.drop_index(
+            "uq_courseware_plans_project_version", table_name="courseware_plans"
+        )
+        op.create_index(
+            "ix_courseware_plans_project_version",
+            "courseware_plans",
+            ["project_id", "version"],
+        )
+        op.drop_index(
+            "uq_teaching_briefs_session_version", table_name="teaching_briefs"
+        )
+        op.drop_index(
+            "uq_teaching_briefs_project_version", table_name="teaching_briefs"
+        )
+        return
+
     with op.batch_alter_table("artifact_versions") as batch_op:
         batch_op.drop_constraint("uq_artifact_versions_project_version", type_="unique")
     op.create_index(

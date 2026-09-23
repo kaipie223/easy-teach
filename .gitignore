@@ -60,3 +60,5 @@ easy-teach-runtime/
 # ChromaDB
 chroma_data/
 knowledge-base/.managed/
+# 排查用的临时脚本（根目录下划线开头），不再入库
+/_*.py

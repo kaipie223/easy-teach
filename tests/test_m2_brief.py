@@ -65,7 +65,7 @@ def test_project_messages_persist_sse_events_and_brief(client, stub_intent_analy
     )
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
-    assert "event: text" in response.text
+    assert "event: delta" in response.text
     assert "event: question" in response.text
 
     brief = client.get(f"/api/v1/projects/{project_id}/brief", headers=headers)
@@ -221,7 +221,12 @@ def test_ai_populates_full_brief_and_preserves_teacher_fields(client, monkeypatc
             confirm_summary="已形成浮力课程需求。",
         )
 
+    def analyze_stream(_self, _session_id, _messages):
+        # The chat SSE layer consumes the streaming adapter; reuse the canned result.
+        yield ("result", (analyze(None, None, _messages), None))
+
     monkeypatch.setattr("backend.services.intent.IntentAnalyzer.analyze", analyze)
+    monkeypatch.setattr("backend.services.intent.IntentAnalyzer.analyze_stream", analyze_stream)
     first = client.post(
         f"/api/v1/projects/{project_id}/messages",
         headers=headers,
@@ -287,6 +292,42 @@ def test_brief_knowledge_point_edit_preserves_structured_details(client):
     assert saved["key_points"] == ["SYN", "SYN-ACK", "ACK"]
     assert saved["examples"] == ["客户端与服务器建立连接"]
     assert saved["estimated_minutes"] == 20
+
+
+def test_brief_keeps_subject_and_grade_for_subject_specific_design(client):
+    """学科与学段必须能存进 brief：蓝图提示词靠它们决定内容怎么组织。"""
+    headers = register(client, "m2-subject-grade@example.com")
+    project = client.post(
+        "/api/v1/projects",
+        headers=headers,
+        json={"title": "学科适配"},
+    )
+    project_id = project.json()["project_id"]
+
+    created = client.patch(
+        f"/api/v1/projects/{project_id}/brief",
+        headers=headers,
+        json=complete_brief_payload(
+            course_name="初中化学·金属的化学性质",
+            subject="化学",
+            grade="初三",
+        ),
+    )
+    assert created.status_code == 200, created.text
+    content = created.json()["content"]
+    assert content["course_name"] == "初中化学·金属的化学性质"
+    assert content["subject"] == "化学"
+    assert content["grade"] == "初三"
+
+    # 教师纠正 AI 判错的学科时，单独改这一个字段也要生效
+    corrected = client.patch(
+        f"/api/v1/projects/{project_id}/brief",
+        headers=headers,
+        json={"subject": "物理"},
+    )
+    assert corrected.status_code == 200, corrected.text
+    assert corrected.json()["content"]["subject"] == "物理"
+    assert corrected.json()["content"]["grade"] == "初三"
 
 
 def test_intent_probing_policy_matches_request_complexity():

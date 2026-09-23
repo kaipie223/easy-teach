@@ -42,6 +42,9 @@ class Material(Base):
     size_bytes = Column(Integer, nullable=False)
     checksum_sha256 = Column(String(64), nullable=False, index=True)
     status = Column(String(32), nullable=False, default="uploaded", index=True)
+    # 解析进度放在资料上，因为资料列表返回的就是这一行；解析本身仍由 analysis 负责。
+    stage = Column(String(48))
+    stage_started_at = Column(DateTime(timezone=True))
     ref_description = Column(Text)
     metadata_json = Column(JSON, nullable=False, default=dict)
     error_code = Column(String(128))

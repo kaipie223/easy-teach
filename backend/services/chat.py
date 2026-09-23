@@ -1,6 +1,5 @@
 """Shared persistent SSE chat workflow for session and project routes."""
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -9,8 +8,10 @@ from sqlalchemy.orm import Session as DBSession
 
 from backend.models.project import Project
 from backend.models.session import ChatMessage, Session
+from backend.schemas import MessageType
 from backend.services.intent import IntentServiceError
 from backend.services.orchestrator import get_orchestrator
+from backend.services.sse import SSE_HEADERS, SSE_MEDIA_TYPE, encode_model_event, encode_sse
 
 logger = logging.getLogger(__name__)
 
@@ -80,21 +81,21 @@ async def create_chat_stream(
                 db=db,
                 session=current_session,
             ):
-                db.add(
-                    ChatMessage(
-                        user_id=session_user_id,
-                        project_id=session_project_id,
-                        session_id=session_key,
-                        role="assistant",
-                        content=event.content,
-                        msg_type=event.event_type.value,
-                        event_data=event.data,
-                        created_at=datetime.now(timezone.utc),
+                if event.event_type is not MessageType.DELTA:
+                    db.add(
+                        ChatMessage(
+                            user_id=session_user_id,
+                            project_id=session_project_id,
+                            session_id=session_key,
+                            role="assistant",
+                            content=event.content,
+                            msg_type=event.event_type.value,
+                            event_data=event.data,
+                            created_at=datetime.now(timezone.utc),
+                        )
                     )
-                )
-                db.commit()
-                data = event.model_dump_json()
-                yield f"event: {event.event_type.value}\ndata: {data}\n\n"
+                    db.commit()
+                yield encode_model_event(event)
         except IntentServiceError as exc:
             error_event = {
                 "event_type": "error",
@@ -118,7 +119,7 @@ async def create_chat_stream(
                 )
             )
             db.commit()
-            yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+            yield encode_sse("error", error_event)
         except Exception:
             logger.exception("SSE chat stream error")
             error_content = "抱歉，处理您的消息时出错了，请重试。"
@@ -148,10 +149,10 @@ async def create_chat_stream(
                     "suggested_action": "请重试",
                 },
             }
-            yield f"event: error\ndata: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+            yield encode_sse("error", error_event)
 
     return StreamingResponse(
         event_stream(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        media_type=SSE_MEDIA_TYPE,
+        headers=SSE_HEADERS,
     )

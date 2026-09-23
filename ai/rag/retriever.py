@@ -1,9 +1,10 @@
 """RAGRetriever - hybrid search: vector (0.7) + keyword (0.3)"""
 
+from pathlib import Path
+
 import chromadb
 
 from ai.rag.embedding import FastEmbedEmbeddingFunction
-from backend.config import normalize_chroma_path
 from backend.schemas import RAGDocument
 
 
@@ -41,7 +42,9 @@ def _keyword_score(query, content):
 class RAGRetriever:
 
     def __init__(self, chroma_persist_dir, collection_name, vector_weight=0.7):
-        persist_path = normalize_chroma_path(chroma_persist_dir)
+        # 路径在配置解析阶段已经归一过（含开发环境的 ASCII 重定向），这里只做最终解析。
+        # 不能再重定向：调用方传入的明确目录（测试、临时目录）必须原样使用。
+        persist_path = Path(chroma_persist_dir).expanduser().resolve()
         if not persist_path.is_dir():
             raise FileNotFoundError(f"ChromaDB dir not found: {persist_path}")
         self.persist_path = persist_path

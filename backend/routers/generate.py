@@ -2,22 +2,34 @@
 
 import logging
 
-from fastapi import APIRouter, Depends
+from typing import Any, AsyncIterator, Callable
+
+from fastapi import APIRouter, Depends, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
 from backend.core.errors import ApiError
 from backend.core.ownership import get_project_for_user, get_session_for_user, get_task_for_user
 from backend.core.security import get_current_user
 from backend.config import settings
-from backend.db.database import get_db
+from backend.db.database import SessionLocal, get_db
 from backend.models.courseware import CoursewarePlan
 from backend.models.project import Project
+from backend.models.task import Task
 from backend.models.user import User
 from backend.services.courseware import get_latest_plan
 from backend.schemas import FeedbackRequest, FeedbackResponse, GenerateRequest, TaskInfo
-from backend.services.brief import get_latest_brief
+from backend.services.brief import get_confirmed_brief
 from backend.services.orchestrator import get_orchestrator
+from backend.services.sse import (
+    SSE_HEADERS,
+    SSE_MEDIA_TYPE,
+    encode_sse,
+    error_frame,
+    wants_event_stream,
+)
 from backend.services.task_queue import enqueue_generation, task_info_values
+from backend.services.watch import watch_snapshot
 from backend.services.versions import (
     apply_operations,
     create_patch,
@@ -33,7 +45,7 @@ router = APIRouter()
 
 
 @router.post("/generate", response_model=TaskInfo, status_code=202)
-async def start_generation(
+def start_generation(
     req: GenerateRequest,
     db: DBSession = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -44,8 +56,8 @@ async def start_generation(
     session = get_session_for_user(db, req.session_id, user)
     artifact_version_id = None
     if session.project_id:
-        brief = get_latest_brief(db, project_id=session.project_id)
-        if brief is None or brief.status != "confirmed":
+        brief = get_confirmed_brief(db, project_id=session.project_id)
+        if brief is None:
             raise ApiError(
                 "请先确认 TeachingBrief 再生成课件",
                 code="BRIEF_NOT_CONFIRMED",
@@ -106,6 +118,71 @@ def get_task_status(
     t = get_task_for_user(db, task_id, user)
 
     return TaskInfo(**task_info_values(t))
+
+
+def _task_snapshot_reader(task_id: str) -> Callable[[], dict[str, Any] | None]:
+    """Return a repeated-read helper that opens its own short-lived session.
+
+    The watcher calls it from a worker thread on every tick, so it must not reuse
+    the request-scoped session, whose identity map would keep returning the first
+    snapshot it loaded.
+    """
+
+    def snapshot() -> dict[str, Any] | None:
+        session = SessionLocal()
+        try:
+            task = session.query(Task).filter(Task.task_id == task_id).first()
+            return task_info_values(task) if task is not None else None
+        finally:
+            session.close()
+
+    return snapshot
+
+
+async def _task_event_stream(task_id: str) -> AsyncIterator[str]:
+    try:
+        async for kind, payload in watch_snapshot(_task_snapshot_reader(task_id)):
+            yield encode_sse(kind, payload)
+    except ApiError as exc:
+        logger.warning("Task progress stream failed: %s", exc.code)
+        yield error_frame(
+            exc.message,
+            code=exc.code,
+            recoverable=exc.recoverable,
+            suggested_action=exc.suggested_action,
+        )
+    except Exception:
+        logger.exception("Task progress stream crashed")
+        yield error_frame(
+            "获取任务进度失败，请稍后重试",
+            code="TASK_STREAM_FAILED",
+            suggested_action="刷新页面后重试",
+        )
+
+
+@router.get("/tasks/{task_id}/events")
+def watch_task_status(
+    http_request: Request,
+    task_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Stream a task's progress instead of making the client poll for it.
+
+    A `progress` frame is emitted whenever the task snapshot changes and a final
+    `result` frame once the task reaches `completed` or `failed`. Clients that do
+    not negotiate `text/event-stream` receive the current snapshot as JSON, which
+    matches `GET /tasks/{task_id}/status`.
+    """
+    task = get_task_for_user(db, task_id, user)
+    if not wants_event_stream(http_request.headers.get("accept")):
+        return TaskInfo(**task_info_values(task))
+
+    return StreamingResponse(
+        _task_event_stream(task_id),
+        media_type=SSE_MEDIA_TYPE,
+        headers=SSE_HEADERS,
+    )
 
 
 @router.post("/generate/feedback", response_model=FeedbackResponse, status_code=201)

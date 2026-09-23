@@ -13,6 +13,13 @@ from backend.db.database import SessionLocal
 from backend.models.material import Material, MaterialAnalysis
 from backend.models.task import Task
 from backend.models.versioning import ExportRecord
+from backend.services.progress import (
+    GENERATION_STAGES,
+    PLAN_DETAILS,
+    label_of,
+    manifest,
+    percent_of,
+)
 
 
 def utcnow() -> datetime:
@@ -29,6 +36,11 @@ def task_info_values(task: Task) -> dict:
         "task_type": task.task_type,
         "status": task.status,
         "progress": task.progress or 0,
+        "stage": task.stage,
+        # 细化文案优先：构建蓝图内部的子阶段比步骤条上的"生成教学蓝图"具体
+        "stage_label": task.stage_label or label_of(GENERATION_STAGES, task.stage),
+        "stage_started_at": task.stage_started_at,
+        "stages": manifest(GENERATION_STAGES),
         "retry_count": task.retry_count or 0,
         "max_retries": task.max_retries or settings.task_max_retries,
         "error_code": task.error_code,
@@ -70,10 +82,33 @@ def claim_task_attempt(db: DBSession, task_id: str) -> bool:
     return True
 
 
-def touch_task(db: DBSession, task: Task, progress: int | None = None) -> None:
-    if progress is not None:
-        task.progress = max(0, min(100, progress))
+def touch_task(
+    db: DBSession,
+    task: Task,
+    stage: str | None = None,
+    *,
+    detail: str | None = None,
+) -> None:
+    """Advance a generation task to `stage`.
+
+    The percentage is read from the stage table, so callers no longer hand-pick
+    numbers that can jump backwards. `detail` refines the wording *inside* the
+    current step without moving it: building the blueprint is the slowest step of
+    the whole pipeline, and its sub-stages are the most concrete answer to "what is
+    the AI doing right now".
+    """
     now = utcnow()
+    if stage is not None:
+        if stage != task.stage:
+            task.stage = stage
+            task.stage_started_at = now
+            # 换步骤时丢掉上一步的细化文案，否则会残留成"步骤是 A、文案是 B"
+            task.stage_label = None
+        task.progress = percent_of(GENERATION_STAGES, stage)
+    if detail is not None:
+        entry = PLAN_DETAILS.get(detail)
+        if entry is not None:
+            task.stage_label, task.progress = entry
     task.heartbeat_at = now
     task.updated_at = now
     db.commit()
@@ -134,8 +169,12 @@ def claim_export_attempt(db: DBSession, export_id: str) -> bool:
     return True
 
 
-def touch_export(db: DBSession, record: ExportRecord) -> None:
-    record.updated_at = utcnow()
+def touch_export(db: DBSession, record: ExportRecord, stage: str | None = None) -> None:
+    now = utcnow()
+    if stage is not None and stage != record.stage:
+        record.stage = stage
+        record.stage_started_at = now
+    record.updated_at = now
     db.commit()
 
 

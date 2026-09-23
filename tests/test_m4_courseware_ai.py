@@ -139,7 +139,7 @@ def test_ai_blueprint_is_normalized_and_evidence_bound():
     assert result.spec.slides[0].evidence_refs[0].evidence_id == "evidence-1"
     assert sum(section.duration_minutes for section in result.spec.lesson_sections) == 45
     assert result.model_name == "deepseek-v4-flash"
-    assert result.prompt_version == PROMPT_VERSION == "courseware-plan-v15-concise-length-retry"
+    assert result.prompt_version == PROMPT_VERSION == "courseware-plan-v20-subject-adaptive"
     assert result.spec.output_specs.docx.homework
     assert result.spec.output_specs.pdf.assessment_checklist
     assert result.spec.output_specs.html.interaction_ids == ["interaction_001"]
@@ -541,3 +541,115 @@ def test_ai_blueprint_keeps_valid_candidate_when_review_repair_is_invalid():
     assert result.spec.slides[0].bullets == ["已通过结构校验的候选内容"]
     assert "保留通过校验" in result.spec.generation_notes[-1]
     assert client.completions_spy.calls == 3
+
+
+# ── AI 自动配图 ────────────────────────────────────────
+
+
+def offered_picture():
+    return {
+        "material_id": "mat_buoyancy",
+        "name": "浮力实验.png",
+        "teacher_note": "课上演示的测力计读数",
+        "description": "弹簧测力计挂着物体在空气与水中的两次读数对比",
+        "keywords": ["弹簧测力计", "浮力"],
+        "vision_status": "ready",
+    }
+
+
+def test_ai_may_attach_an_offered_picture_to_a_slide():
+    """候选清单既进提示词，也决定哪些引用可以保留。"""
+    plan = valid_plan()
+    plan["slides"][1]["image"] = {
+        "material_id": "mat_buoyancy",
+        "placement": "full",
+        "caption": "弹簧测力计示数对比",
+    }
+    client = fake_client(plan, plan)
+
+    result = generate_courseware_spec(
+        brief_content(), [], available_images=[offered_picture()], client=client
+    )
+
+    image = result.spec.slides[1].image
+    assert image is not None
+    assert image.material_id == "mat_buoyancy"
+    assert image.placement == "full"
+    assert image.caption == "弹簧测力计示数对比"
+
+    # 清单必须真的进了请求，否则模型无从选择
+    request_body = json.loads(client.completions_spy.requests[0]["messages"][1]["content"])
+    assert request_body["available_images"] == [offered_picture()]
+
+
+def test_slide_picture_outside_the_offered_set_is_stripped():
+    """模型编造或跨项目的图片引用必须被剔除；非法位置模式只退回默认。"""
+    plan = valid_plan()
+    plan["slides"][0]["image"] = {"material_id": "mat_invented", "placement": "right"}
+    plan["slides"][1]["image"] = {"material_id": "mat_other_project", "placement": "right"}
+    plan["slides"][2]["image"] = {"material_id": "mat_buoyancy", "placement": "diagonal"}
+    client = fake_client(plan, plan)
+
+    result = generate_courseware_spec(
+        brief_content(), [], available_images=[offered_picture()], client=client
+    )
+
+    assert result.spec.slides[0].image is None
+    assert result.spec.slides[1].image is None
+    # 清单内但位置模式非法时只退回默认，不因为版面字段废掉整份蓝图
+    assert result.spec.slides[2].image.material_id == "mat_buoyancy"
+    assert result.spec.slides[2].image.placement == "right"
+
+
+def test_no_slide_picture_is_kept_without_candidates():
+    """一张候选图都没有时，模型不能凭空给任何一页配图。"""
+    plan = valid_plan()
+    plan["slides"][0]["image"] = {"material_id": "mat_whatever", "placement": "full"}
+    client = fake_client(plan, plan)
+
+    result = generate_courseware_spec(brief_content(), [], client=client)
+
+    assert all(slide.image is None for slide in result.spec.slides)
+
+
+# ── 关键词强调 ──────────────────────────────────────────
+
+
+def test_emphasis_markup_is_limited_to_slide_bullets():
+    """标记只在要点里保留；其它字段写入时就剥掉，避免文档出现裸星号。"""
+    from backend.schemas import limit_emphasis_to_bullets
+
+    payload = {
+        "title": "**标题**不该带标记",
+        "slides": [
+            {
+                "title": "**页标题**",
+                "bullets": ["保留 **关键词** 标记"],
+                "speaker_notes": "**讲稿**也不该带",
+            }
+        ],
+        "output_specs": {"docx": {"homework": "**课后任务**"}},
+    }
+
+    cleaned = limit_emphasis_to_bullets(payload)
+
+    assert cleaned["title"] == "标题不该带标记"
+    assert cleaned["slides"][0]["title"] == "页标题"
+    assert cleaned["slides"][0]["bullets"] == ["保留 **关键词** 标记"]
+    assert cleaned["slides"][0]["speaker_notes"] == "讲稿也不该带"
+    assert cleaned["output_specs"]["docx"]["homework"] == "课后任务"
+
+
+def test_blueprint_keeps_bullet_emphasis_but_not_elsewhere():
+    """端到端：要点保留标记，标题与讲稿里的标记被剥掉。"""
+    plan = valid_plan()
+    plan["title"] = "**浮力**及其应用"
+    plan["slides"][0]["bullets"] = ["**弹簧测力计**示数差等于浮力"]
+    plan["slides"][0]["speaker_notes"] = "**先预测**再测量。"
+    client = fake_client(plan, plan)
+
+    result = generate_courseware_spec(brief_content(), [], client=client)
+
+    assert result.spec.title == "浮力及其应用"
+    assert result.spec.slides[0].bullets == ["**弹簧测力计**示数差等于浮力"]
+    assert result.spec.slides[0].speaker_notes == "先预测再测量。"

@@ -5,7 +5,7 @@
       <span>TeachMate 想了解更多</span>
     </div>
 
-    <p class="qc-prompt">{{ data.prompt || '请选择或输入你的想法：' }}</p>
+    <p v-if="shownPrompt" class="qc-prompt">{{ shownPrompt }}</p>
 
     <!-- 预设选项 -->
     <div v-if="data.options?.length" class="qc-options">
@@ -52,9 +52,19 @@ import { QuestionFilled } from '@element-plus/icons-vue'
 
 const props = defineProps({
   data: { type: Object, default: () => ({ prompt: '', options: [] }) },
+  /**
+   * 追问文案。气泡里已经逐字展示过同一句时，父组件传空串把它隐藏。
+   * 用 null 表示"未指定"，此时退回 data.prompt。
+   */
+  prompt: { type: String, default: null },
 })
 
 const emit = defineEmits(['submit', 'skip'])
+
+// null 才回退到 data.prompt：空串是明确的"这句话已经显示过了，不用再显示一次"
+const shownPrompt = computed(
+  () => props.prompt ?? props.data.prompt ?? '请选择或输入你的想法：',
+)
 
 const selectedOption = ref(-1)
 const freeText = ref('')

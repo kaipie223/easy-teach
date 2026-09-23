@@ -15,6 +15,7 @@ from backend.config import settings
 from backend.core import configure_logging, ensure_runtime_directories, register_exception_handlers
 from backend.core.errors import build_error_response
 from backend.db.database import engine
+from backend.db.schema_revision import log_schema_status, schema_check
 from backend.routers import (
     admin,
     auth,
@@ -52,6 +53,7 @@ REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 async def lifespan(app: FastAPI):
     ensure_runtime_directories()
     logger.info("Starting %s %s", settings.app_name, settings.app_version)
+    log_schema_status()
     yield
     logger.info("Stopping %s", settings.app_name)
 
@@ -236,6 +238,7 @@ def _dependency_checks() -> dict[str, dict[str, str]]:
             logger.warning("Chroma health check failed: %s", exc)
             checks["chroma"] = {"status": "error", "message": str(exc)}
 
+    checks["database_schema"] = schema_check()
     checks["redis"] = _redis_health_check()
     return checks
 

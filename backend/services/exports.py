@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +17,8 @@ from backend.models.versioning import ArtifactVersion, ExportRecord
 from backend.schemas import ExportFormat, ExportInfo
 from backend.services.generator import generate_docx, generate_html, generate_pdf, generate_pptx
 from backend.services.limits import ensure_storage_capacity, ensure_task_capacity
+from backend.services.materials import resolve_slide_images
+from backend.services.progress import EXPORT_STAGES, export_stage_label, percent_of
 from backend.services.uploads import checksum_file, remove_managed_file
 from backend.services.task_queue import claim_export_attempt, touch_export, utcnow
 from backend.services.versions import snapshot_spec
@@ -57,6 +58,14 @@ def to_export_info(record: ExportRecord) -> ExportInfo:
         artifact_version_id=record.artifact_version_id,
         format=record.format,
         status=record.status,
+        stage=record.stage,
+        stage_label=export_stage_label(record.format, record.stage),
+        # 已完成的记录就是 100%，不该把"最后一步 90%"留在列表里
+        stage_percent=(
+            100 if record.status == "completed" else percent_of(EXPORT_STAGES, record.stage)
+        ),
+        stage_started_at=record.stage_started_at,
+        started_at=record.started_at,
         file_id=record.file_id,
         file_name=record.file_name,
         checksum_sha256=record.checksum_sha256,
@@ -119,27 +128,25 @@ def create_export_records(
     return records
 
 
-def _sync(coro):
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    import concurrent.futures
-
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        return executor.submit(asyncio.run, coro).result()
-
-
-def _render(version: ArtifactVersion, export_format: str, output_name: str) -> str:
+def _render(
+    version: ArtifactVersion,
+    export_format: str,
+    output_name: str,
+    *,
+    images: dict[str, Path] | None = None,
+) -> str:
     plan = snapshot_spec(version).model_dump(mode="json")
+    # The deck renders the slides themselves, while the lesson document and the
+    # printed handout list the same pictures as an appendix. The interactive page
+    # has no slide content, so it takes no pictures.
     if export_format == "pptx":
-        return _sync(generate_pptx(plan, output_name=output_name))
+        return generate_pptx(plan, output_name=output_name, images=images)
     if export_format == "docx":
-        return _sync(generate_docx(plan, output_name=output_name))
+        return generate_docx(plan, output_name=output_name, images=images)
     if export_format == "pdf":
-        return _sync(generate_pdf(plan, output_name=output_name))
+        return generate_pdf(plan, output_name=output_name, images=images)
     if export_format == "html":
-        return _sync(generate_html(plan, output_name=output_name))
+        return generate_html(plan, output_name=output_name)
     raise ApiError(
         f"不支持的导出格式：{export_format}",
         code="EXPORT_FORMAT_UNSUPPORTED",
@@ -175,9 +182,13 @@ def run_export(export_id: str, *, raise_errors: bool = False) -> None:
         if session is None:
             raise RuntimeError("项目尚未创建会话，无法登记导出文件")
 
+        touch_export(db, record, "render")
         output_name = export_file_name(version, record.format, record.export_id)
-        path = Path(_render(version, record.format, output_name))
-        touch_export(db, record)
+        # Resolved per run so an archived or moved picture degrades to a deck
+        # without that picture instead of failing the whole export job.
+        images = resolve_slide_images(db, record.project_id, snapshot_spec(version))
+        path = Path(_render(version, record.format, output_name, images=images))
+        touch_export(db, record, "save")
         checksum, size_bytes = checksum_file(path)
         # ``exports.file_id`` is VARCHAR(40). A human-readable filename can be
         # much longer and must never double as a database identifier.

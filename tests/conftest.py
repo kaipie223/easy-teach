@@ -52,4 +52,10 @@ def stub_intent_analyzer(monkeypatch):
             is_complete=False,
         )
 
+    def analyze_stream(_self, _session_id, messages):
+        result = analyze(_self, _session_id, messages)
+        yield ("text", "请补充授课对象和核心知识点。")
+        yield ("result", (result, None))
+
     monkeypatch.setattr("backend.services.intent.IntentAnalyzer.analyze", analyze)
+    monkeypatch.setattr("backend.services.intent.IntentAnalyzer.analyze_stream", analyze_stream)

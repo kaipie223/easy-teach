@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from math import ceil
-from typing import Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session as DBSession
@@ -30,8 +30,9 @@ from backend.schemas import (
     RAGDocument,
     SlideSpec,
 )
-from backend.services.brief import get_latest_brief, normalize_content
+from backend.services.brief import get_confirmed_brief, normalize_content
 from backend.services.courseware_ai import CoursewareAIError, generate_courseware_spec
+from backend.services.materials import list_project_images
 from backend.services.quality import require_courseware_quality
 from backend.services.version_allocator import project_version_lock
 
@@ -177,15 +178,31 @@ def _group_points(points: list[KnowledgePoint], max_groups: int) -> list[list[Kn
 
 
 def _point_bullets(points: list[KnowledgePoint]) -> list[str]:
+    """Build the bullets for one knowledge-point slide.
+
+    知识点既没有要点也没有示例时，不能把标题原样当作要点——那会让幻灯片变成"标题与
+    唯一要点完全相同"的空壳。改为给出与该知识点相关的学习任务：它是可执行的指引，
+    而不是凭空编造的知识点内容。
+    """
     bullets: list[str] = []
     for point in points:
         details = list(point.key_points)
         if point.examples:
             details.append("示例：" + "；".join(point.examples))
+        if details:
+            if len(points) == 1:
+                bullets.extend(details)
+            else:
+                bullets.append(f"{point.title}：" + "；".join(details))
+            continue
+        fallback = [
+            f"用自己的话解释“{point.title}”",
+            f"举一个与“{point.title}”相关的例子",
+        ]
         if len(points) == 1:
-            bullets.extend(details or [point.title])
+            bullets.extend(fallback)
         else:
-            bullets.append(f"{point.title}：" + "；".join(details or [point.title]))
+            bullets.append(f"{point.title}：" + "；".join(fallback))
     return bullets[:6]
 
 
@@ -243,6 +260,28 @@ def _make_interaction(
     )
 
 
+# 这些值说明"信息还没定下来"，来自需求确认提示词让模型把缺失项写成"待确认"。
+# 模板兜底路径会把 brief 字段直接拼进面向学生的幻灯片，所以必须先过滤掉。
+_UNRESOLVED_HINTS = ("待确认", "待定", "tbd", "n/a")
+
+
+def _usable_field(value: Any, *, min_length: int = 2) -> str:
+    """Return a brief field only when it carries real content.
+
+    模板路径没有模型去润色，字段原样进成品。空值、单个字符、纯数字和"待确认"这类
+    未定标记都必须挡在这里，否则幻灯片上会出现"教学重点：1"这种坏数据。
+    """
+    text = str(value or "").strip()
+    if len(text) < min_length:
+        return ""
+    if text.isdigit():
+        return ""
+    lowered = text.lower()
+    if any(hint in lowered for hint in _UNRESOLVED_HINTS):
+        return ""
+    return text
+
+
 def compile_plan_content(
     brief: TeachingBrief,
     evidence_refs: list[EvidenceRef],
@@ -282,14 +321,15 @@ def compile_plan_content(
             )
         )
 
+    # 授课对象缺失或被标成"待确认"时宁可不写这一条，也不能把占位符投影给学生
+    audience = _usable_field(content["target_audience"])
+    cover_bullets = [f"课程时长：{content['duration_minutes']} 分钟", "学习目标：" + title]
+    if audience:
+        cover_bullets.insert(0, f"授课对象：{audience}")
     add_slide(
         title,
         "建立课程主题和学习预期",
-        [
-            f"授课对象：{content['target_audience']}",
-            f"课程时长：{content['duration_minutes']} 分钟",
-            "学习目标：" + title,
-        ],
+        cover_bullets,
         "开场说明课程目标，并邀请学生联系已有经验。",
         "cover",
     )
@@ -301,14 +341,18 @@ def compile_plan_content(
         "agenda",
     )
 
+    # 重点／难点为空、纯数字或"待确认"时退回通用表述，避免"教学重点：1"进成品
+    focus = _usable_field(content["teaching_focus"]) or "抓住核心概念之间的关系"
+    difficulty = _usable_field(content["teaching_difficulties"]) or "把概念应用到新情境"
+
     if not low_stimulation:
         add_slide(
             "先建立整体理解，再拆解关键步骤",
             "概览课程核心概念",
             [
                 "核心知识点：" + "、".join(point.title for point in knowledge_points),
-                "教学重点：" + (content["teaching_focus"] or "抓住核心概念之间的关系"),
-                "学习难点：" + (content["teaching_difficulties"] or "把概念应用到新情境"),
+                "教学重点：" + focus,
+                "学习难点：" + difficulty,
             ],
             "先让学生看到整体结构，再逐页展开关键知识点。",
             "overview",
@@ -360,7 +404,7 @@ def compile_plan_content(
             (
                 "常见误区与纠正",
                 [
-                    "容易混淆：" + (content["teaching_difficulties"] or "知识点之间的作用"),
+                    "容易混淆：" + difficulty,
                     "纠正方法：先说顺序，再说明每一步的作用",
                 ],
                 "请学生先指出容易混淆的地方，再用自己的话解释纠正方法。",
@@ -586,6 +630,11 @@ def revise_courseware_plan(
     return plan
 
 
+def _ignore_stage(_stage: str) -> None:
+    """Default progress sink for callers that do not stream."""
+    return None
+
+
 def build_courseware_plan(
     db: DBSession,
     project: Project,
@@ -594,9 +643,19 @@ def build_courseware_plan(
     force_rebuild: bool = False,
     generation_mode: str = "ai",
     allow_template_fallback: bool = False,
+    on_stage: Callable[[str], None] | None = None,
 ) -> CoursewarePlan:
-    brief = get_latest_brief(db, project_id=project.project_id)
-    if brief is None or brief.status != "confirmed":
+    """Build and persist a teaching blueprint.
+
+    `on_stage` receives coarse phase names so a streaming caller can render live
+    progress. The persisted plan is identical whether or not it is supplied, so a
+    synchronous caller keeps the exact previous behaviour.
+    """
+    notify_stage = on_stage if on_stage is not None else _ignore_stage
+    notify_stage("brief")
+
+    brief = get_confirmed_brief(db, project_id=project.project_id)
+    if brief is None:
         raise ApiError(
             "请先确认 TeachingBrief 再生成教学蓝图",
             code="BRIEF_NOT_CONFIRMED",
@@ -610,8 +669,10 @@ def build_courseware_plan(
         and latest.generation_mode == generation_mode
         and not force_rebuild
     ):
+        notify_stage("reused")
         return latest
 
+    notify_stage("evidence")
     refs = _build_evidence_refs(db, project.project_id, rag_docs)
     model_name = None
     prompt_version = None
@@ -619,11 +680,19 @@ def build_courseware_plan(
     notes = ""
     resolved_mode = generation_mode
     if generation_mode == "template":
+        notify_stage("template")
         content = compile_plan_content(brief, refs)
         notes = "教师明确选择基础模板生成。"
     elif generation_mode == "ai":
         try:
-            ai_result = generate_courseware_spec(brief.content_json or {}, refs)
+            ai_result = generate_courseware_spec(
+                brief.content_json or {},
+                refs,
+                # The teacher's uploaded pictures, described by the vision pass.
+                # This is both the model's menu and the allowlist for slide pictures.
+                available_images=list_project_images(db, project.project_id),
+                on_stage=notify_stage,
+            )
             content = ai_result.spec
             model_name = ai_result.model_name
             prompt_version = ai_result.prompt_version
@@ -647,6 +716,7 @@ def build_courseware_plan(
             code="PLAN_GENERATION_MODE_INVALID",
             status_code=422,
         )
+    notify_stage("persist")
     with project_version_lock(db, project.project_id):
         version = (
             db.query(func.max(CoursewarePlan.version))
@@ -680,8 +750,17 @@ def build_courseware_plan(
 
 
 def to_info(plan: CoursewarePlan) -> CoursewarePlanInfo:
-    content = CoursewarePlanSpec.model_validate(plan.plan_json or {})
-    refs = [EvidenceRef.model_validate(item) for item in (plan.source_refs or [])]
+    try:
+        content = CoursewarePlanSpec.model_validate(plan.plan_json or {})
+        refs = [EvidenceRef.model_validate(item) for item in (plan.source_refs or [])]
+    except Exception as exc:
+        raise ApiError(
+            "教学蓝图数据无法读取，可能由历史数据或版本升级导致",
+            code="PLAN_SNAPSHOT_INVALID",
+            status_code=500,
+            recoverable=False,
+            suggested_action="请重新生成教学蓝图",
+        ) from exc
     return CoursewarePlanInfo(
         plan_id=plan.plan_id,
         user_id=plan.user_id,

@@ -22,9 +22,12 @@ export class SSEClient {
    * @param {function} callbacks.onDone - 流结束
    * @param {function} callbacks.onError - 连接错误
    */
-  constructor(url, callbacks = {}) {
+  constructor(url, callbacks = {}, { method = 'POST' } = {}) {
     this.url = url
     this.callbacks = callbacks
+    // 进度订阅端点（projects/{id}/events、tasks/{id}/events）只提供 GET，
+    // 硬编码 POST 会被 405 拒绝；对话与蓝图生成要带请求体，所以默认仍是 POST。
+    this.method = method
     this.abortController = null
     this.reader = null
     this.buffer = ''
@@ -35,14 +38,16 @@ export class SSEClient {
     this.abortController = new AbortController()
 
     try {
+      // GET 不能带请求体，也不该声明 JSON 内容类型
+      const sendsBody = this.method !== 'GET'
       const response = await fetch(this.url, {
-        method: 'POST',
+        method: this.method,
         headers: {
-          'Content-Type': 'application/json',
+          ...(sendsBody ? { 'Content-Type': 'application/json' } : {}),
           Accept: 'text/event-stream',
           ...(getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {}),
         },
-        body: JSON.stringify(body),
+        ...(sendsBody ? { body: JSON.stringify(body) } : {}),
         signal: this.abortController.signal,
       })
 
@@ -124,6 +129,12 @@ export class SSEClient {
         break
       case 'confirm':
         this.callbacks.onConfirm?.(parsed.data || parsed)
+        break
+      case 'progress':
+        this.callbacks.onProgress?.(parsed)
+        break
+      case 'result':
+        this.callbacks.onResult?.(parsed)
         break
       case 'error':
         this.callbacks.onServiceError?.({

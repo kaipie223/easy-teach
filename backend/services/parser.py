@@ -9,7 +9,7 @@ from docx import Document
 # 初始化日志记录器
 logger = logging.getLogger(__name__)
 
-async def parse_pdf(file_path: str) -> str:
+def parse_pdf(file_path: str) -> str:
     """Extract structured text from PDF; embedded images are intentionally ignored."""
     if not os.path.exists(file_path):
         logger.error(f"PDF 文件不存在: {file_path}")
@@ -49,7 +49,7 @@ async def parse_pdf(file_path: str) -> str:
     doc.close()
     return "".join(full_content).strip()
 
-async def parse_docx(file_path: str) -> str:
+def parse_docx(file_path: str) -> str:
     """Extract text and tables from DOCX; embedded images are intentionally ignored."""
     if not os.path.exists(file_path):
         logger.error(f"Word 文件不存在: {file_path}")

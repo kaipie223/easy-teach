@@ -21,6 +21,19 @@
       />
 
       <el-form class="brief-form" label-position="top" @submit.prevent="save">
+        <el-form-item label="课程／课题">
+          <el-input v-model="form.course_name" :disabled="isConfirmed" />
+        </el-form-item>
+        <el-form-item label="学科">
+          <el-input
+            v-model="form.subject"
+            placeholder="如：语文、数学、化学、信息技术"
+            :disabled="isConfirmed"
+          />
+        </el-form-item>
+        <el-form-item label="年级／学段">
+          <el-input v-model="form.grade" placeholder="如：高一、小学三年级" :disabled="isConfirmed" />
+        </el-form-item>
         <el-form-item label="教学目标">
           <el-input v-model="form.teaching_goal" type="textarea" :rows="2" :disabled="isConfirmed" />
         </el-form-item>
@@ -81,6 +94,9 @@ const props = defineProps({
 
 const emit = defineEmits(['save', 'confirm'])
 const form = reactive({
+  course_name: '',
+  subject: '',
+  grade: '',
   teaching_goal: '',
   target_audience: '',
   duration_minutes: 45,
@@ -97,6 +113,9 @@ const knowledgePointDetails = ref([])
 
 function syncForm(brief) {
   if (!brief) return
+  form.course_name = brief.course_name || ''
+  form.subject = brief.subject || ''
+  form.grade = brief.grade || ''
   form.teaching_goal = brief.teaching_goal || ''
   form.target_audience = brief.target_audience || ''
   form.duration_minutes = brief.duration_minutes || 45

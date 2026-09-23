@@ -16,7 +16,7 @@
           circle
           :type="recording ? 'danger' : 'default'"
           @click="$emit('toggle-voice')"
-          :disabled="disabled"
+          :disabled="disabled || recording"
         >
           <el-icon :size="18"><Microphone v-if="!recording" /><Loading v-else /></el-icon>
         </el-button>

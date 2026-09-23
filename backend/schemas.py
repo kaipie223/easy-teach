@@ -3,11 +3,46 @@
 本文件是后端、AI 模块、前端之间的唯一数据契约，对齐 docs/01_技术协议与接口规范。
 """
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+
+# ═══════════════════════════════════════════════════════════════
+# 幻灯片文本标记
+# ═══════════════════════════════════════════════════════════════
+
+# 模型用 **重点** 标出需要强调的关键词。只有幻灯片要点有渲染器能把它变成加粗
+# 变色，所以标记被限制在 slides[*].bullets[*]，其它位置在写入时就剥掉，避免
+# 教案、打印版和互动页里出现裸星号。
+EMPHASIS_PATTERN = re.compile(r"\*\*(.+?)\*\*")
+
+
+def strip_emphasis(text: str) -> str:
+    """Remove emphasis markup while keeping the text inside it."""
+    return EMPHASIS_PATTERN.sub(r"\1", str(text))
+
+
+def limit_emphasis_to_bullets(node: Any, *, in_bullets: bool = False) -> Any:
+    """Recursively drop emphasis markup that sits outside slide bullets.
+
+    The deck renders `**重点**` as bold + colour, while the lesson document, the
+    printable handout and the interactive page are plain text — a marker leaking
+    there would show up as literal asterisks.
+    """
+    if isinstance(node, dict):
+        return {
+            key: limit_emphasis_to_bullets(value, in_bullets=key == "bullets")
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [limit_emphasis_to_bullets(item, in_bullets=in_bullets) for item in node]
+    if isinstance(node, str) and not in_bullets and "**" in node:
+        return strip_emphasis(node)
+    return node
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -21,6 +56,10 @@ class MessageRole(str, Enum):
 
 class MessageType(str, Enum):
     TEXT = "text"
+    # Incremental model output. Deltas are transient: they are streamed to the
+    # client for the typewriter effect but never persisted, so a reload shows the
+    # consolidated `question` / `confirm` event instead of hundreds of fragments.
+    DELTA = "delta"
     QUESTION = "question"
     CONFIRM = "confirm"
     ERROR = "error"
@@ -240,6 +279,18 @@ class FileInfo(BaseModel):
     ref_description: str | None = None
 
 
+class StageInfo(BaseModel):
+    """One step of a long-running job: stable key, wording, completion percent.
+
+    The wording travels with the stage instead of living in the client, so the
+    frontend never keeps a second copy of the same table.
+    """
+
+    key: str
+    label: str
+    percent: int
+
+
 class MaterialInfo(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -253,6 +304,13 @@ class MaterialInfo(BaseModel):
     size_bytes: int = Field(ge=0)
     checksum_sha256: str
     status: MaterialStatus
+    # 解析进度。按资料类型给出不同步骤（图片多一步视觉识别，视频多一步转录解析），
+    # 所以步骤清单也一并下发，前端不需要知道哪个类型该走哪些步骤。
+    stage: str | None = None
+    stage_label: str | None = None
+    stage_percent: int = 0
+    stage_started_at: datetime | None = None
+    stages: list[StageInfo] = Field(default_factory=list)
     ref_description: str | None = None
     metadata_json: dict[str, Any] = Field(default_factory=dict)
     error_code: str | None = None
@@ -391,6 +449,10 @@ class KnowledgePoint(BaseModel):
 
 
 class TeachingBriefUpdate(BaseModel):
+    # 学科与学段决定后面整份教学设计的组织方式，必须允许教师直接修正。
+    course_name: str | None = Field(default=None, max_length=200)
+    subject: str | None = Field(default=None, max_length=100)
+    grade: str | None = Field(default=None, max_length=100)
     teaching_goal: str | None = Field(default=None, max_length=1000)
     target_audience: str | None = Field(default=None, max_length=200)
     duration_minutes: int | None = Field(default=None, ge=1, le=480)
@@ -511,15 +573,132 @@ class EvidenceRef(BaseModel):
     score: float | None = None
 
 
+# ═══════════════════════════════════════════════════════════════
+# 幻灯片版式
+# ═══════════════════════════════════════════════════════════════
+
+# 版式名是快照的一部分，也是渲染器与前端预览判断"这一页长什么样"的唯一依据。
+# 规范值只有下面这些；同义词在写入快照时就归一，所以前端只需要认识规范值本身，
+# 不必再抄一份同义词表——两份表必然漂移，而漂移的后果就是预览与导出不一致。
+CANONICAL_LAYOUTS = (
+    "cover",    # 封面
+    "agenda",   # 目录
+    "section",  # 章节分隔
+    "bullets",  # 标准讲解页，也是默认与兜底
+    "steps",    # 有序步骤：要学生照着做
+    "flow",     # 流程／因果：这个过程自己这样发生
+    "cards",    # 并列卡片：同级、无先后
+    "compare",  # 双栏对比
+    "metric",   # 数据度量：值得放大的数字
+    "quote",    # 引用原文
+    "summary",  # 小结
+)
+LAYOUT_ALIASES = {
+    "cover": "cover",
+    "title": "cover",
+    "title_slide": "cover",
+    "agenda": "agenda",
+    "toc": "agenda",
+    "outline": "agenda",
+    "section": "section",
+    "section_header": "section",
+    "divider": "section",
+    "bullets": "bullets",
+    "bullet": "bullets",
+    "steps": "steps",
+    "step": "steps",
+    "process": "steps",
+    "procedure": "steps",
+    "flow": "flow",
+    "flowchart": "flow",
+    "flow_chart": "flow",
+    "cause_effect": "flow",
+    "cards": "cards",
+    "card": "cards",
+    "grid": "cards",
+    "categories": "cards",
+    "compare": "compare",
+    "comparison": "compare",
+    "two_column": "compare",
+    "metric": "metric",
+    "metrics": "metric",
+    "numbers": "metric",
+    "statistics": "metric",
+    "quote": "quote",
+    "quotation": "quote",
+    "citation": "quote",
+    "excerpt": "quote",
+    "summary": "summary",
+    "conclusion": "summary",
+    "wrap_up": "summary",
+    # 模板兜底路径（compile_plan_content）用这些名字表达页型，归一到最近的规范值：
+    # 概览与知识点页都是标准讲解页，示例页是"先…再…最后…"的顺序步骤，误区页是
+    # 双栏对比，流程页是因果流程，互动与迁移页退回到标准讲解页。
+    "overview": "bullets",
+    "knowledge": "bullets",
+    "example": "steps",
+    "misconception": "compare",
+    "process": "flow",
+    "interaction": "bullets",
+    "application": "bullets",
+}
+
+
+def normalize_layout(value: str | None) -> str:
+    """把已知的同义词换成规范版式名，不认识的值原样返回。
+
+    不认识的值故意不改写：渲染器要靠"这个值不是我认识的"才能判断模型没有给出
+    有效版式，进而退回封面／小结的位置骨架。若在这里一律落成默认版式，第 1 页
+    和最后 1 页的兜底就失效了——`title_and_bullets` 这个默认值正是这种情况。
+
+    连字符与空格按分隔符处理：模型很爱写 `two-column`、`flow chart`，它们和
+    表里的下划线写法是同一个意思，不该因此掉到"未识别"去。
+    """
+    raw = str(value or "").strip().lower()
+    raw = raw.replace("-", "_").replace(" ", "_")
+    return LAYOUT_ALIASES.get(raw, raw)
+
+
+class SlideImageSpec(BaseModel):
+    """A picture attached to one slide.
+
+    `material_id` points at a teacher-uploaded image in `materials`. Only the ID
+    is stored: renderers receive the resolved file separately, so a snapshot
+    never carries a filesystem path that would break when files move, and an ID
+    is always checked against the owning project before anything is rendered.
+
+    `placement` decides how the picture shares the 16:9 canvas with the text:
+
+    - ``right``      — bullets left, picture right (the safe default)
+    - ``full``       — picture fills the content area; bullets move to the notes
+    - ``background`` — picture covers the whole slide behind a translucent sheet
+    """
+
+    material_id: str = Field(min_length=1, max_length=40)
+    placement: Literal["right", "full", "background"] = "right"
+    caption: str = ""
+
+
 class SlideSpec(BaseModel):
     slide_id: str
     order: int
     title: str
     purpose: str
+    # 这个默认值刻意不是规范版式名：它表示"模型没有指定版式"，渲染器据此对
+    # 第 1 页和最后 1 页套用封面／小结骨架，而不是让整份课件退化成 N 页雷同的
+    # 讲解页。写成一个真实版式名会让"未指定"与"明确指定"再也分不开。
     layout: str = "title_and_bullets"
     bullets: list[str] = Field(default_factory=list)
     speaker_notes: str = ""
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+    # Optional so snapshots written before pictures existed still validate.
+    image: SlideImageSpec | None = None
+
+    @field_validator("layout")
+    @classmethod
+    def _canonical_layout(cls, value: str) -> str:
+        """写入快照时就把版式名归一，前端因此不必再复制一份同义词表。"""
+        return normalize_layout(value)
 
 
 class LessonPlanSectionSpec(BaseModel):
@@ -636,7 +815,9 @@ class CoursewarePlanInfo(BaseModel):
 
 class CoursewareGenerateRequest(BaseModel):
     plan_id: str | None = None
-    idempotency_key: str | None = Field(default=None, min_length=1, max_length=128)
+    # 幂等键刻意不接受客户端指定（多传会被忽略）：只有服务端知道这次生成用的是
+    # 哪份蓝图快照，客户端能给的只有 "latest"，换蓝图后仍会命中旧任务。服务端按
+    # project + 本次基准版本派生，见 routers/courseware.py。
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -668,6 +849,25 @@ class AIRegenerateRequest(BaseModel):
     target_type: Literal["slide", "lesson_section", "interaction"]
     target_id: str = Field(min_length=1, max_length=128)
     instruction: str = Field(min_length=1, max_length=2000)
+    # Optional anchor inside the target. `field` narrows the rewrite to a single
+    # editable field and `index` to a single element of a list field, so a teacher
+    # can annotate one bullet instead of the whole slide. Omitting both rewrites
+    # the entire target, which is the behaviour clients had before previews.
+    field: str | None = Field(default=None, max_length=64)
+    index: int | None = Field(default=None, ge=0)
+
+
+class SlideImageRequest(BaseModel):
+    """Bind or clear the picture on one slide.
+
+    `material_id` is optional because ``None`` is how a picture is removed; that
+    is the only field in the revision surface where an explicit null is
+    meaningful.
+    """
+
+    material_id: str | None = Field(default=None, max_length=40)
+    placement: Literal["right", "full", "background"] = "right"
+    caption: str = Field(default="", max_length=200)
 
 
 class RestoreVersionRequest(BaseModel):
@@ -739,6 +939,13 @@ class ExportInfo(BaseModel):
     artifact_version_id: str
     format: ExportFormat
     status: ExportStatus
+    # 每条导出记录只负责一个格式，所以没有步骤清单，只有进度条与文案
+    stage: str | None = None
+    stage_label: str | None = None
+    stage_percent: int = 0
+    # 进入当前阶段的时刻；整体已用时长看 started_at
+    stage_started_at: datetime | None = None
+    started_at: datetime | None = None
     file_id: str | None = None
     file_name: str | None = None
     checksum_sha256: str | None = None
@@ -795,6 +1002,12 @@ class TaskInfo(BaseModel):
     task_type: str = "generation"
     status: TaskStatus
     progress: int = 0
+    # 阶段是唯一事实来源，progress 由它派生；stage_label 允许比步骤更细
+    # （构建蓝图内部的子阶段才是"AI 现在在做什么"最具体的答案）。
+    stage: str | None = None
+    stage_label: str | None = None
+    stage_started_at: datetime | None = None
+    stages: list[StageInfo] = Field(default_factory=list)
     retry_count: int = 0
     max_retries: int = 2
     error_code: str | None = None
@@ -855,3 +1068,17 @@ class ErrorBody(BaseModel):
 
 class ErrorResponse(BaseModel):
     error: ErrorBody
+
+
+# ═══════════════════════════════════════════════════════════════
+# AI 配图（成果编辑）
+# ═══════════════════════════════════════════════════════════════
+
+class SlideImageGenerateRequest(BaseModel):
+    """成果编辑里"AI 生成配图"的请求。
+
+    只需要一句提示词：生成结果会登记成项目图片资料，绑定到页面仍走现有的
+    "应用配图并创建版本"接口，所以这里不重复接收 placement / caption。
+    """
+
+    prompt: str = Field(min_length=2, max_length=600)
