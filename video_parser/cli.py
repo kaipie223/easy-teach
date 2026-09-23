@@ -78,7 +78,6 @@ def _build_parser() -> argparse.ArgumentParser:
     generate_cmd.add_argument("--output-dir", required=True, help="Directory for generated artifacts.")
     generate_cmd.add_argument("--title", default=None)
     generate_cmd.add_argument("--audience", default="初中学生")
-    generate_cmd.add_argument("--style", default="清晰、简洁、可复习")
     generate_cmd.add_argument("--max-slides", type=int, default=12)
     generate_cmd.add_argument("--no-answer-key", action="store_true")
     generate_cmd.add_argument("--run-label", choices=["baseline", "candidate", "golden"], default="candidate")
@@ -225,7 +224,6 @@ def _generate_command(args: argparse.Namespace) -> int:
         request = DemoGenerationRequest(
             title=args.title,
             audience=args.audience,
-            style=args.style,
             max_slides=args.max_slides,
             include_answer_key=not args.no_answer_key,
         )

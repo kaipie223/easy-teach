@@ -219,11 +219,11 @@ class TeachingContentManifest(IRBaseModel):
 
 class DemoGenerationRequest(IRBaseModel):
     schema_version: str = "0.1"
-    outputs: list[Literal["pptx", "docx", "html"]] = Field(default_factory=lambda: ["pptx", "docx", "html"])
+    # S6.9：`outputs` / `style` / `language` 曾是"接受但完全不生效"的参数
+    #（渲染恒定产出全部三种格式、style/language 从未进入任何提示词或产物）。
+    # 已按"从模型里删掉"处理，不再假装有效。
     audience: str = "初中学生"
-    style: str = "清晰、简洁、可复习"
     title: str | None = None
-    language: Literal["zh-CN", "en-US"] = "zh-CN"
     include_answer_key: bool = True
     student_mode: bool = True
     max_slides: int = Field(default=12, ge=3, le=60)

@@ -302,10 +302,8 @@ def _quality_report(parsed: VideoParseResult, ir: TeachingContentIR, assets: lis
             "video_understanding_completed": float(video_understanding is not None and video_understanding.status == "completed"),
             "video_understanding_degraded": float(video_understanding is not None and video_understanding.status in {"failed", "partial"}),
         },
-        "thresholds": {
-            "keyframe_duplicate_rate_max": 0.15,
-            "ocr_nonempty_text_rate_min_when_requested": 0.0,
-        },
+        # S6.10：`thresholds` 声明曾长期只写不读（全仓无任何比较逻辑），
+        # 属于永不执行的自检契约，已删除；阈值语义若将来需要，应与判定一起实现。
         "warnings": warnings,
         "generation_boundary": {"original_video_included": False, "original_video_access_required": False},
     }
