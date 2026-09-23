@@ -1,16 +1,19 @@
 """M5 revision, immutable version and version-bound export APIs."""
 
 import asyncio
+import logging
 from pathlib import Path
+from typing import Any, AsyncIterator, Callable
 
-from fastapi import APIRouter, Depends, Query
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session as DBSession
 
 from backend.core.errors import ApiError
-from backend.core.ownership import get_project_for_user
+from backend.core.ownership import get_material_for_user, get_project_for_user
 from backend.core.security import get_current_user
 from backend.db.database import get_db
+from backend.models.material import Material
 from backend.models.project import Project
 from backend.models.user import User
 from backend.models.versioning import ArtifactVersion, ExportRecord, RevisionPatch
@@ -24,10 +27,28 @@ from backend.schemas import (
     RevisionInterpretRequest,
     RevisionPatchInfo,
     RestoreVersionRequest,
+    SlideImageRequest,
 )
+from backend.services.ai_stream import aiter_threaded_producer
 from backend.services.exports import create_export_records, run_export, to_export_info  # noqa: F401
+from backend.services.image_generation import image_generation_enabled
 from backend.services.limits import consume_model_quota
-from backend.services.revision_ai import RevisionAIError, find_target, regenerate_target
+from backend.services.materials import list_project_images
+from backend.services.slide_illustration import illustrate_slides
+from backend.services.revision_ai import (
+    RevisionAIError,
+    find_target,
+    regenerate_target,
+    resolve_edit_scope,
+)
+from backend.services.sse import (
+    SSE_HEADERS,
+    SSE_MEDIA_TYPE,
+    encode_sse,
+    error_frame,
+    wants_event_stream,
+)
+from backend.services.progress import REVISION_BRANCHES, REVISION_STAGES, frame
 from backend.services.task_queue import enqueue_export
 from backend.services.versions import (
     apply_operations,
@@ -45,6 +66,9 @@ from backend.services.versions import (
 
 project_router = APIRouter()
 export_router = APIRouter()
+logger = logging.getLogger(__name__)
+
+
 
 
 def _version_or_404(db: DBSession, project: Project, version_id: str) -> ArtifactVersion:
@@ -54,9 +78,63 @@ def _version_or_404(db: DBSession, project: Project, version_id: str) -> Artifac
     return version
 
 
+SLIDE_PLACEMENT_LABELS = {
+    "right": "右侧图文",
+    "full": "整页大图",
+    "background": "背景图",
+}
+
+
+def _project_image(db: DBSession, project: Project, user: User, material_id: str) -> Material:
+    """Resolve a picture that may legally be attached to this project's deck.
+
+    A picture is a private upload, so this is the only place a reference can be
+    created and it verifies the material is an image of *this* project that is
+    still present on disk. Rendering re-checks ownership as well, so a snapshot
+    that was hand-edited or whose material was deleted afterwards degrades to
+    "no picture" instead of embedding another project's file.
+    """
+    material = get_material_for_user(db, material_id, user)
+    if material.file_type != "image":
+        raise ApiError(
+            "只能选用图片资料作为配图",
+            code="SLIDE_IMAGE_NOT_AN_IMAGE",
+            status_code=422,
+            details={"file_type": material.file_type},
+        )
+    if material.project_id != project.project_id:
+        raise ApiError(
+            "只能选用本项目上传的图片",
+            code="SLIDE_IMAGE_OTHER_PROJECT",
+            status_code=422,
+            suggested_action="请先在本项目的「资料」页上传该图片",
+        )
+    if not Path(material.stored_path).is_file():
+        raise ApiError(
+            "图片文件已丢失，无法作为配图",
+            code="SLIDE_IMAGE_FILE_MISSING",
+            status_code=422,
+            suggested_action="请删除该资料后重新上传，再设置配图",
+        )
+    return material
+
+
+def _anchor_label(request: AIRegenerateRequest) -> str:
+    """Readable anchor for the version summary shown in the history list."""
+    if request.field is None:
+        return request.target_id
+    if request.index is None:
+        return f"{request.target_id}.{request.field}"
+    return f"{request.target_id}.{request.field}[{request.index + 1}]"
+
+
 def _revision_ai_api_error(error: RevisionAIError) -> ApiError:
     status_codes = {
         "REVISION_TARGET_NOT_FOUND": 422,
+        "REVISION_FIELD_REQUIRED": 422,
+        "REVISION_FIELD_NOT_EDITABLE": 422,
+        "REVISION_FIELD_INDEX_UNSUPPORTED": 422,
+        "REVISION_FIELD_INDEX_INVALID": 422,
         "AI_NOT_CONFIGURED": 503,
         "AI_RATE_LIMITED": 429,
         "AI_TIMEOUT": 504,
@@ -186,17 +264,15 @@ def apply_revision(
     return to_version_info(version)
 
 
-@project_router.post(
-    "/{project_id}/revisions/regenerate",
-    response_model=ArtifactVersionInfo,
-    status_code=201,
-)
-async def regenerate_revision_target(
+def _regenerate_payload(
+    db: DBSession,
     project_id: str,
+    user: User,
     request: AIRegenerateRequest,
-    db: DBSession = Depends(get_db),
-    user: User = Depends(get_current_user),
-):
+    *,
+    on_stage: Callable[[str], None] | None = None,
+) -> ArtifactVersionInfo:
+    """Shared regeneration used by both the JSON and the streaming response."""
     project = get_project_for_user(db, project_id, user)
     base = _version_or_404(db, project, request.base_version_id)
     current = get_latest_version(db, project.project_id)
@@ -213,21 +289,41 @@ async def regenerate_revision_target(
 
     snapshot = snapshot_spec(base)
     try:
-        find_target(snapshot, request.target_type, request.target_id)
+        _, target = find_target(snapshot, request.target_type, request.target_id)
+        resolve_edit_scope(
+            target,
+            request.target_type,
+            field=request.field,
+            index=request.index,
+        )
     except RevisionAIError as error:
         raise _revision_ai_api_error(error) from error
     consume_model_quota(user.user_id)
     try:
-        result = await asyncio.to_thread(
-            regenerate_target,
+        # Only forward optional arguments when they are actually used, so existing
+        # replacements of `regenerate_target` keep their original signature.
+        options: dict[str, Any] = {
+            # The picture menu for a whole-slide rewrite, and the allowlist that
+            # keeps the model from referencing an upload it was never offered.
+            "available_images": list_project_images(db, project.project_id),
+        }
+        if on_stage is not None:
+            options["on_stage"] = on_stage
+        if request.field is not None:
+            options["field"] = request.field
+            options["index"] = request.index
+        result = regenerate_target(
             snapshot,
             target_type=request.target_type,
             target_id=request.target_id,
             instruction=request.instruction,
+            **options,
         )
     except RevisionAIError as error:
         raise _revision_ai_api_error(error) from error
 
+    if on_stage is not None:
+        on_stage("persist")
     version = create_version(
         db,
         project,
@@ -235,7 +331,7 @@ async def regenerate_revision_target(
         source_plan_id=base.source_plan_id,
         snapshot=result.spec,
         base_version_id=base.artifact_version_id,
-        summary=f"AI 局部重生成 {request.target_id}：{request.instruction.strip()[:160]}",
+        summary=f"AI 局部重生成 {_anchor_label(request)}：{request.instruction.strip()[:160]}",
         generation_mode="ai",
         model_name=result.model_name,
         prompt_version=result.prompt_version,
@@ -244,6 +340,203 @@ async def regenerate_revision_target(
     )
     version.quality_status = result.quality_report["status"]
     version.quality_report = result.quality_report
+    db.commit()
+    db.refresh(version)
+    return to_version_info(version)
+
+
+async def _regenerate_event_stream(
+    db: DBSession,
+    project_id: str,
+    user: User,
+    request: AIRegenerateRequest,
+) -> AsyncIterator[str]:
+    """Emit progress frames while the target regenerates, then the new version."""
+
+    def run(emit: Callable[[str, Any], None]) -> None:
+        def on_stage(stage: str) -> None:
+            emit("progress", frame(REVISION_STAGES, stage, branches=REVISION_BRANCHES))
+
+        payload = _regenerate_payload(db, project_id, user, request, on_stage=on_stage)
+        emit("result", payload.model_dump(mode="json"))
+
+    try:
+        async for kind, payload in aiter_threaded_producer(run):
+            yield encode_sse(kind, payload)
+    except ApiError as exc:
+        logger.warning("Streamed revision regeneration failed: %s", exc.code)
+        yield error_frame(
+            exc.message,
+            code=exc.code,
+            recoverable=exc.recoverable,
+            suggested_action=exc.suggested_action,
+        )
+    except Exception:
+        logger.exception("Streamed revision regeneration crashed")
+        yield error_frame(
+            "局部重生成失败，请重试",
+            code="REVISION_STREAM_FAILED",
+            suggested_action="请稍后重试；若持续失败，请联系管理员",
+        )
+
+
+@project_router.post(
+    "/{project_id}/revisions/regenerate",
+    response_model=ArtifactVersionInfo,
+    status_code=201,
+)
+async def regenerate_revision_target(
+    http_request: Request,
+    project_id: str,
+    request: AIRegenerateRequest,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Regenerate one target of an artifact version.
+
+    A client sending `Accept: text/event-stream` gets the model round trips as
+    `progress` frames and the new version as the final `result`, which keeps a
+    one-to-two minute regeneration observable. Other clients keep JSON.
+    """
+    if not wants_event_stream(http_request.headers.get("accept")):
+        return await asyncio.to_thread(_regenerate_payload, db, project_id, user, request)
+
+    return StreamingResponse(
+        _regenerate_event_stream(db, project_id, user, request),
+        media_type=SSE_MEDIA_TYPE,
+        headers=SSE_HEADERS,
+    )
+
+
+@project_router.put(
+    "/{project_id}/versions/{version_id}/slides/{slide_id}/image",
+    response_model=ArtifactVersionInfo,
+    status_code=201,
+)
+def set_slide_image(
+    project_id: str,
+    version_id: str,
+    slide_id: str,
+    request: SlideImageRequest,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Attach, move or remove the picture on one slide as a new version.
+
+    Cleared by sending ``material_id: null``. Like every other revision this
+    forks a fresh immutable version, so the previous deck stays reproducible.
+    """
+    project = get_project_for_user(db, project_id, user)
+    base = _version_or_404(db, project, version_id)
+    current = get_latest_version(db, project.project_id)
+    if current is None or current.artifact_version_id != base.artifact_version_id:
+        raise ApiError(
+            "成果版本已变化，请基于最新版本重新设置配图",
+            code="VERSION_CONFLICT",
+            status_code=409,
+            details={
+                "expected": base.artifact_version_id,
+                "current": current.artifact_version_id if current else None,
+            },
+        )
+
+    snapshot = snapshot_spec(base)
+    try:
+        slide_index, slide = find_target(snapshot, "slide", slide_id)
+    except RevisionAIError as error:
+        raise _revision_ai_api_error(error) from error
+
+    data = snapshot.model_dump(mode="json")
+    if request.material_id is None:
+        data["slides"][slide_index]["image"] = None
+        summary = f"移除第 {slide.order} 页配图"
+    else:
+        material = _project_image(db, project, user, request.material_id)
+        data["slides"][slide_index]["image"] = {
+            "material_id": material.material_id,
+            "placement": request.placement,
+            "caption": request.caption.strip(),
+        }
+        summary = (
+            f"第 {slide.order} 页配图设为 {material.original_name}"
+            f"（{SLIDE_PLACEMENT_LABELS[request.placement]}）"
+        )
+
+    version = create_version(
+        db,
+        project,
+        user_id=user.user_id,
+        source_plan_id=base.source_plan_id,
+        snapshot=data,
+        base_version_id=base.artifact_version_id,
+        summary=summary,
+        generation_mode="manual",
+        expected_latest_version_id=base.artifact_version_id,
+    )
+    db.commit()
+    db.refresh(version)
+    return to_version_info(version)
+
+
+@project_router.post(
+    "/{project_id}/versions/{version_id}/illustrate",
+    response_model=ArtifactVersionInfo,
+    status_code=201,
+)
+def illustrate_version_slides(
+    project_id: str,
+    version_id: str,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """给这一版里还没有配图的页面各生成一张插图，整批落成一个新版本。
+
+    一页一个版本会把版本历史冲垮，而"这一版补了配图"本来就是同一个动作，所以整批
+    只新建一个版本。已有配图的页面保持不动，教师逐页换图仍走配图接口。
+    """
+    project = get_project_for_user(db, project_id, user)
+    base = _version_or_404(db, project, version_id)
+    current = get_latest_version(db, project.project_id)
+    if current is None or current.artifact_version_id != base.artifact_version_id:
+        raise ApiError(
+            "只能为最新版本补配图",
+            code="VERSION_CONFLICT",
+            status_code=409,
+            details={
+                "expected": base.artifact_version_id,
+                "current": current.artifact_version_id if current else None,
+            },
+            suggested_action="先切回最新版本，再补配图",
+        )
+    if not image_generation_enabled():
+        raise ApiError(
+            "尚未配置图像生成服务",
+            code="IMAGE_GEN_NOT_CONFIGURED",
+            status_code=409,
+            suggested_action="配置 ARK_API_KEY 后重试，或手工上传图片再逐页选择",
+        )
+
+    data = snapshot_spec(base).model_dump(mode="json")
+    attached = illustrate_slides(db, project, data.get("slides") or [], user_id=user.user_id)
+    if not attached:
+        raise ApiError(
+            "这一版没有可自动配图的页面",
+            code="NO_SLIDE_NEEDS_IMAGE",
+            status_code=409,
+            suggested_action="页面都已有配图，或剩余缺图页是卡片/流程/目录等结构版式，请在页面里单独配图",
+        )
+
+    version = create_version(
+        db,
+        project,
+        user_id=user.user_id,
+        source_plan_id=base.source_plan_id,
+        snapshot=data,
+        base_version_id=base.artifact_version_id,
+        summary=f"为 {len(attached)} 页生成配图",
+        generation_mode="manual",
+        expected_latest_version_id=base.artifact_version_id,
+    )
     db.commit()
     db.refresh(version)
     return to_version_info(version)

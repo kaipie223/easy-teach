@@ -22,19 +22,35 @@ from backend.schemas import (
     MaterialBindingInfo,
     MaterialBindingReplaceRequest,
     MaterialInfo,
+    SlideImageGenerateRequest,
+    StageInfo,
 )
 from backend.services.task_queue import enqueue_material_analysis
+from backend.services.image_generation import (
+    ImageGenerationError,
+    generate_image,
+    image_generation_enabled,
+)
 from backend.services.materials import (
     MaterialValidationError,
+    ParsedChunk,
+    ParsedMaterial,
     apply_parsed_material,
     detect_file_type_from_path,
     fail_material_analysis,
     parse_material,
     parser_identity,
 )
-from backend.services.limits import remaining_storage_bytes
+from backend.services.progress import label_of, manifest, material_stages, percent_of
+from backend.services.slide_illustration import store_generated_image
+from backend.services.limits import (
+    consume_model_quota,
+    ensure_storage_capacity,
+    remaining_storage_bytes,
+)
 from backend.services.uploads import (
     UploadSizeExceeded,
+    checksum_file,
     remove_managed_file,
     remove_staged_upload,
     stream_upload_to_path,
@@ -44,7 +60,20 @@ router = APIRouter()
 
 
 def _material_info(material: Material) -> MaterialInfo:
-    return MaterialInfo.model_validate(material)
+    """Fill the parsing progress that lives on the material row.
+
+    步骤清单取决于资料类型（图片多一步视觉识别，视频多一步转录解析），所以整张
+    清单随资料一起下发，前端不必知道哪个类型该走哪些步骤。
+    """
+    info = MaterialInfo.model_validate(material)
+    stages = material_stages(material.file_type)
+    info.stages = [StageInfo(**item) for item in manifest(stages)]
+    info.stage_label = label_of(stages, material.stage)
+    # 已完成的资料就是 100%，不该把"最后一步 92%"留在列表里
+    info.stage_percent = (
+        100 if material.status == "ready" else percent_of(stages, material.stage)
+    )
+    return info
 
 
 def _analysis_info(analysis: MaterialAnalysis) -> MaterialAnalysisInfo:
@@ -207,6 +236,53 @@ async def upload_material(
             details={"material_id": material_id},
         ) from exc
 
+    return _material_info(material)
+
+
+@router.post(
+    "/projects/{project_id}/images/generate",
+    response_model=MaterialInfo,
+    status_code=201,
+)
+def generate_project_image(
+    project_id: str,
+    request: SlideImageGenerateRequest,
+    db: DBSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """用 AI 生成一张配图，并直接登记成该项目的图片资料。
+
+    生成结果与手工上传走完全相同的资料结构，所以随后用现有的
+    "应用配图并创建版本" 接口绑定到页面即可：绑定、导出渲染、配额校验
+    都不需要第二套逻辑。这样成果编辑里就不再强制"先上传图片再选图"。
+    """
+    project = get_project_for_user(db, project_id, user)
+    if not image_generation_enabled():
+        raise ApiError(
+            "尚未配置图像生成服务",
+            code="IMAGE_GEN_NOT_CONFIGURED",
+            status_code=409,
+            suggested_action="在 .env 配置 ARK_API_KEY 后重试，或改用手工上传图片",
+        )
+
+    consume_model_quota(user.user_id)
+    try:
+        generated = generate_image(request.prompt)
+    except ImageGenerationError as exc:
+        raise ApiError(
+            str(exc),
+            code=exc.code,
+            status_code=409 if exc.code in {"IMAGE_PROMPT_REQUIRED"} else 502,
+            suggested_action="调整提示词后重试，或改用手工上传图片",
+        ) from exc
+
+    material = store_generated_image(
+        db,
+        project,
+        user_id=user.user_id,
+        generated=generated,
+        prompt=request.prompt,
+    )
     return _material_info(material)
 
 

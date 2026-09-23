@@ -32,7 +32,9 @@
           />
         </el-select>
         <div class="export-actions">
-          <el-button type="primary" :loading="exporting" @click="createExports">
+          <!-- 必须显式加括号调用：@click="createExports" 会把 MouseEvent 当作
+               force 参数传进去，序列化后是 {}，后端校验 force: bool 直接 422。 -->
+          <el-button type="primary" :loading="exporting" @click="createExports()">
             导出 PPT、Word、PDF 和互动内容
           </el-button>
           <el-button plain @click="openEditor">返回成果编辑</el-button>
@@ -56,6 +58,14 @@
               </div>
               <span>{{ item.file_name || '文件生成中' }}</span>
               <small>{{ item.size_bytes ? `${Math.ceil(item.size_bytes / 1024)} KB` : item.error || '等待任务完成' }}</small>
+              <!-- 每条记录只负责一个格式，所以没有步骤清单，只有进度条与文案 -->
+              <StageProgress
+                v-if="item.status === 'pending' || item.status === 'processing'"
+                class="export-progress"
+                :percent="item.stage_percent"
+                :label="item.stage_label || statusLabel(item.status)"
+                :started-at="item.started_at"
+              />
             </div>
             <el-button
               v-if="item.status === 'completed'"
@@ -65,6 +75,11 @@
             >
               <el-icon><Download /></el-icon>
               下载
+            </el-button>
+            <!-- 已完成的导出默认会被后端复用（不重渲染）。渲染器或样式更新后，
+                 用户必须有一个显式的"重新导出"入口，否则永远只能下到旧文件。 -->
+            <el-button v-if="item.status === 'completed'" plain @click="retryExport(item)">
+              重新导出
             </el-button>
             <el-button v-else-if="item.status === 'failed'" plain @click="retryExport(item)">
               重试导出
@@ -90,6 +105,8 @@ import {
   fetchProjectExports,
   getApiErrorMessage,
 } from '@/api'
+import StageProgress from '@/components/progress/StageProgress.vue'
+import { SSEClient } from '@/utils/sse'
 import { useProjectStore } from '@/stores/project'
 
 const route = useRoute()
@@ -102,7 +119,9 @@ const exports = ref([])
 const loading = ref(false)
 const exporting = ref(false)
 const errorMessage = ref('')
-let pollTimer = null
+let progressStream = null
+let reconnectTimer = null
+let streamClosed = false
 
 const selectedVersion = computed(() => versions.value.find((version) => version.artifact_version_id === selectedVersionId.value))
 
@@ -132,18 +151,50 @@ async function loadExports() {
     return
   }
   exports.value = (await fetchProjectExports(projectId.value, selectedVersionId.value)).data || []
-  if (exports.value.some((item) => ['pending', 'processing'].includes(item.status))) pollExports()
 }
 
-function pollExports() {
-  if (pollTimer) window.clearTimeout(pollTimer)
-  pollTimer = window.setTimeout(async () => {
-    try {
-      await loadExports()
-    } catch (error) {
-      errorMessage.value = error.response?.data?.error?.message || '导出状态刷新失败，请手动刷新'
-    }
-  }, 1200)
+/**
+ * 订阅项目级进度流，替代原先 1.2 秒一次的轮询。
+ * 服务端只在确实有状态变化时推送，空闲项目不再产生任何请求。
+ */
+function startProgressStream() {
+  if (!projectId.value) return
+  stopProgressStream()
+  progressStream = new SSEClient(
+    `/api/v1/projects/${projectId.value}/events`,
+    {
+      onProgress: async () => {
+        try {
+          await loadExports()
+        } catch (error) {
+          errorMessage.value = error.response?.data?.error?.message || '导出状态刷新失败，请手动刷新'
+        }
+      },
+      onError: () => { scheduleReconnect() },
+      // 服务端在监听时长上限后会关闭长连接，这里自动重新订阅。
+      onDone: () => { scheduleReconnect() },
+    },
+    // 该端点只提供 GET，用默认的 POST 会 405
+    { method: 'GET' },
+  )
+  progressStream.connect()
+}
+
+function stopProgressStream() {
+  if (reconnectTimer) {
+    window.clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  progressStream?.disconnect()
+  progressStream = null
+}
+
+function scheduleReconnect() {
+  if (streamClosed || !projectId.value || reconnectTimer) return
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null
+    startProgressStream()
+  }, 3000)
 }
 
 async function loadWorkspace() {
@@ -166,7 +217,7 @@ async function createExports(force = false) {
   try {
     exports.value = (await createVersionExports(projectId.value, selectedVersionId.value, undefined, force)).data.exports || []
     ElMessage.success(force ? '已重新创建导出任务' : '已创建导出任务')
-    pollExports()
+    // 进度由项目级 SSE 推送：新建的导出记录本身就会改变快照并触发刷新。
   } catch (error) {
     errorMessage.value = error.response?.data?.error?.message || '导出任务创建失败，请重试'
   } finally {
@@ -207,9 +258,13 @@ function openEditor() {
   router.push({ path: '/editor', query: { artifactVersionId: selectedVersionId.value } })
 }
 
-onMounted(loadWorkspace)
+onMounted(async () => {
+  await loadWorkspace()
+  startProgressStream()
+})
 onBeforeUnmount(() => {
-  if (pollTimer) window.clearTimeout(pollTimer)
+  streamClosed = true
+  stopProgressStream()
 })
 </script>
 

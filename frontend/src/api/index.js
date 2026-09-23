@@ -46,15 +46,49 @@ api.interceptors.response.use(
 
 export default api
 
+/**
+ * 请求校验失败（422）的可读化。
+ *
+ * 后端对这类错误的 message 是固定的英文 "Request validation failed."，真正的原因
+ * 在 details 数组里（哪个字段、为什么）。不翻出来，用户只会看到一句没有信息量的
+ * 提示，无法判断是哪个流程出了问题。
+ */
+const VALIDATION_REASON = {
+  missing: '缺少必填字段',
+  string_too_short: '长度不足',
+  string_too_long: '超出长度限制',
+  enum: '取值不在允许范围',
+  value_error: '取值无效',
+  json_invalid: '请求体不是合法 JSON',
+}
+
+function formatValidationError(payload) {
+  const details = payload?.error?.details
+  if (!Array.isArray(details) || !details.length) return null
+  const items = details
+    .map((item) => {
+      const field = Array.isArray(item?.loc)
+        ? item.loc.filter((part) => part !== 'body').join('.')
+        : ''
+      const reason = VALIDATION_REASON[item?.type] || item?.msg || '格式不正确'
+      return field ? `${field} ${reason}` : reason
+    })
+    .slice(0, 3)
+    .join('；')
+  return items ? `请求参数校验失败：${items}` : null
+}
+
 export async function getApiErrorMessage(error, fallback = '请求失败，请重试') {
-  const payload = error.response?.data
+  let payload = error.response?.data
   if (typeof Blob !== 'undefined' && payload instanceof Blob) {
     try {
-      const parsed = JSON.parse(await payload.text())
-      return parsed?.error?.message || fallback
+      payload = JSON.parse(await payload.text())
     } catch {
       return fallback
     }
+  }
+  if (payload?.error?.code === 'validation_error') {
+    return formatValidationError(payload) || '请求参数校验失败，请刷新页面后重试'
   }
   return payload?.error?.message || error.message || fallback
 }
@@ -98,11 +132,13 @@ export function uploadFile(file, sessionId, refDescription = '', options = {}) {
 // ── 语音 ──────────────────────────────────────────
 
 /** 语音转文字 */
-export function transcribeAudio(audioBlob, sessionId = null) {
+export function transcribeAudio(audioBlob, sessionId = null, filename = 'voice.webm') {
   const form = new FormData()
-  form.append('audio', audioBlob)
+  // 必须显式带文件名：后端按扩展名做白名单校验，而 FormData 默认的 "blob" 没有扩展名。
+  form.append('audio', audioBlob, filename)
   if (sessionId) form.append('session_id', sessionId)
-  return api.post('/speech/transcribe', form)
+  // 本地 faster-whisper 在 CPU 上转写明显慢于普通接口，默认 30s 超时不够。
+  return api.post('/speech/transcribe', form, { timeout: 120000 })
 }
 
 // ── 生成 ──────────────────────────────────────────
@@ -212,10 +248,16 @@ export function saveCoursewarePlanRevision(projectId, basePlanId, content, summa
   })
 }
 
+/**
+ * 触发课件生成。
+ *
+ * 刻意不发送幂等键：只有服务端知道这次生成用的是哪份蓝图快照，客户端能给出的
+ * 只有 "latest"，于是换蓝图之后仍会命中同一个旧任务，"重新生成"看起来毫无反应。
+ * 服务端按 project + 本次基准版本派生幂等键，同一版本重复点击依然只跑一次。
+ */
 export function startProjectGeneration(projectId, planId = null) {
   return api.post(`/projects/${projectId}/generate`, {
     ...(planId ? { plan_id: planId } : {}),
-    idempotency_key: `project-generation:${projectId}:${planId || 'latest'}`,
   })
 }
 
@@ -249,6 +291,17 @@ export function regenerateArtifactTarget(projectId, payload) {
   })
 }
 
+/** 设置或移除某一页的配图，material_id 传 null 表示移除 */
+export function setSlideImage(projectId, versionId, slideId, payload) {
+  return api.put(`/projects/${projectId}/versions/${versionId}/slides/${slideId}/image`, payload)
+}
+
+/** 给这一版里还没有配图的页面批量生成插图：整批只产生一个新版本 */
+export function illustrateVersion(projectId, versionId) {
+  // 逐页生成插图，整批可能跑几分钟，超时给足
+  return api.post(`/projects/${projectId}/versions/${versionId}/illustrate`, undefined, { timeout: 600000 })
+}
+
 export function restoreArtifactVersion(projectId, versionId, summary = '') {
   return api.post(`/projects/${projectId}/versions/${versionId}/restore`, summary ? { summary } : undefined)
 }
@@ -261,8 +314,20 @@ export function createVersionExports(projectId, artifactVersionId, formats = ['p
   }, { timeout: 30000 })
 }
 
+export function generateSlideImage(projectId, prompt) {
+  // 图像生成比普通接口慢（Seedream 单张约 10-40s），超时给足。
+  return api.post(`/projects/${projectId}/images/generate`, { prompt }, { timeout: 180000 })
+}
+
 export function fetchProjectExports(projectId, artifactVersionId = null) {
   return api.get(`/projects/${projectId}/exports`, {
+    params: artifactVersionId ? { artifact_version_id: artifactVersionId } : {},
+  })
+}
+
+/** 某个成果版本已生成的产物文件（生成任务写出的 pptx/docx/html） */
+export function fetchVersionFiles(projectId, artifactVersionId = null) {
+  return api.get(`/projects/${projectId}/files`, {
     params: artifactVersionId ? { artifact_version_id: artifactVersionId } : {},
   })
 }

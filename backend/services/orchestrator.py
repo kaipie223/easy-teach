@@ -6,7 +6,7 @@
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Callable
 
 from sqlalchemy.orm import Session as DBSession
 
@@ -25,25 +25,44 @@ from backend.schemas import (
     ReferenceMaterial,
     TaskInfo,
 )
+from backend.services.ai_stream import aiter_blocking_generator
 from backend.services.intent import get_intent_analyzer
 from backend.services.brief import (
     brief_to_intent,
-    get_latest_brief,
+    get_confirmed_brief,
     normalize_content,
     persist_intent_result,
     to_info,
 )
 from backend.services.courseware import build_courseware_plan
-from backend.services.rag import search as rag_search
+from backend.services.rag import search_sync
 from backend.services.quality import require_courseware_quality
 from backend.services.task_queue import claim_task_attempt, task_info_values, touch_task, utcnow
 from backend.services.versions import ensure_initial_version
 from backend.services.parser import parse_docx, parse_pdf
 from backend.services.generator import generate_docx, generate_html, generate_pptx
+from backend.services.materials import resolve_slide_images
 from backend.services.limits import ensure_storage_capacity, ensure_task_capacity
+from backend.services.progress import GENERATION_STAGES, percent_of
+from backend.services.slide_illustration import illustrate_slides
 from backend.services.uploads import remove_managed_file
 
 logger = logging.getLogger(__name__)
+
+
+def _illustration_progress(db: DBSession, task: Task, done: int, total: int) -> None:
+    """把自动配图的按页进度写进任务。
+
+    配图是这条链路上唯一按页计数的步骤，"还剩几页"比一个百分比更具体，所以这里直接
+    更新阶段文案；百分比仍取阶段表中的值，进度条不会因此来回跳。
+    """
+    if total <= 0:
+        return
+    task.stage = "illustrate"
+    task.stage_label = f"为第 {min(done + 1, total)}/{total} 页生成配图"
+    task.progress = percent_of(GENERATION_STAGES, "illustrate")
+    task.updated_at = utcnow()
+    db.commit()
 
 
 class Orchestrator:
@@ -66,25 +85,36 @@ class Orchestrator:
         """处理一轮对话，SSE 流式返回事件。"""
         messages = history or [{"role": "user", "content": message}]
 
-        # 1. 先发送确认收到
-        yield ChatEvent(event_type=MessageType.TEXT, content="收到您的消息，正在分析教学意图……")
+        # 1. 流式调用意图分析：模型产出的教师可见文本边生成边推送。
+        #    The generator is drained on a worker thread so the event loop keeps
+        #    serving other requests while the model is still writing.
+        result = None
+        reply = None
+        async for kind, value in aiter_blocking_generator(
+            self.intent_analyzer.analyze_stream(session_id, messages)
+        ):
+            if kind == "text":
+                yield ChatEvent(event_type=MessageType.DELTA, content=value)
+            else:
+                result, reply = value
+        if result is None:
+            raise RuntimeError("意图分析未返回结果")
 
-        # 2. 调用意图分析
-        result = self.intent_analyzer.analyze(session_id, messages)
         brief = None
         if db is not None and session is not None:
             brief, result = persist_intent_result(db, session, result)
         brief_content = normalize_content(brief.content_json) if brief is not None else None
         brief_payload = to_info(brief).model_dump(mode="json") if brief is not None else None
 
-        # 3. 流式输出确认/追问
+        # 2. 输出结构化结果；正文优先复用已流式展示的 reply，避免两处文案不一致。
         if not result.is_complete:
             # 信息不全 → 追问
+            follow_up = reply or result.follow_up_question or "请补充更多信息"
             yield ChatEvent(
                 event_type=MessageType.QUESTION,
-                content=result.follow_up_question or "请补充更多信息",
+                content=follow_up,
                 data={
-                    "prompt": result.follow_up_question or "请补充更多信息",
+                    "prompt": follow_up,
                     "missing_info": result.missing_info,
                     "options": [],
                     "allow_free": True,
@@ -95,7 +125,7 @@ class Orchestrator:
             # 信息完整 → 确认总结
             yield ChatEvent(
                 event_type=MessageType.CONFIRM,
-                content=result.confirm_summary or _build_confirm_text(result),
+                content=reply or result.confirm_summary or _build_confirm_text(result),
                 data={
                     "fields": {
                         "topic": result.teaching_goal,
@@ -195,29 +225,29 @@ class Orchestrator:
             raise RuntimeError("Anonymous generation tasks are no longer supported")
 
         try:
-            touch_task(db, task, 10)
+            touch_task(db, task, "brief")
 
             # Step 1: 锁定已确认 brief；匿名 M0 会话继续使用旧意图缓存。
             confirmed_brief = (
-                get_latest_brief(db, project_id=task.project_id)
+                get_confirmed_brief(db, project_id=task.project_id)
                 if task.project_id
                 else None
             )
             intent = (
                 brief_to_intent(confirmed_brief)
-                if confirmed_brief is not None and confirmed_brief.status == "confirmed"
+                if confirmed_brief is not None
                 else self.intent_analyzer.lock_intent(task.session_id)
             )
-            touch_task(db, task, 20)
+            touch_task(db, task, "search")
 
             # Step 2: RAG 检索
             query = f"{intent.teaching_goal} {' '.join(kp.title for kp in intent.knowledge_points)}"
-            rag_docs = _sync(rag_search(query, top_k=5, owner_id=task.user_id))
-            touch_task(db, task, 40)
+            rag_docs = search_sync(query, top_k=5, owner_id=task.user_id)
+            touch_task(db, task, "parse")
 
             # Step 3: 解析参考资料
             references = _load_references(task.session_id, db)
-            touch_task(db, task, 60)
+            touch_task(db, task, "plan")
 
             # Step 4: Compile or load the single source-of-truth blueprint.
             plan = None
@@ -245,7 +275,12 @@ class Orchestrator:
             if plan is None and task.project_id and confirmed_brief is not None:
                 project = db.query(Project).filter(Project.project_id == task.project_id).first()
                 if project is not None:
-                    plan = build_courseware_plan(db, project, rag_docs=rag_docs)
+                    plan = build_courseware_plan(
+                        db,
+                        project,
+                        rag_docs=rag_docs,
+                        on_stage=_plan_stage_sink(task_id),
+                    )
                     task.plan_id = plan.plan_id
                     artifact_version = ensure_initial_version(
                         db,
@@ -291,19 +326,49 @@ class Orchestrator:
                     artifact_version.quality_status = quality_report["status"]
                     artifact_version.quality_report = quality_report
                     db.flush()
-            touch_task(db, task, 70)
+            touch_task(db, task, "quality")
+
+            # Step 4.5: 每页自动配图。放在质量门禁之后（门禁没过不该先花掉图片额度），
+            # 也放在渲染之前 —— 图片随这一版一起写进快照，而不是每配一张图就多一个版本。
+            if (
+                artifact_version is not None
+                and settings.slide_illustration_enabled
+                and isinstance(intent_dict.get("slides"), list)
+            ):
+                illustration_project = (
+                    db.query(Project).filter(Project.project_id == task.project_id).first()
+                    if task.project_id
+                    else None
+                )
+                if illustration_project is not None:
+                    touch_task(db, task, "illustrate")
+                    attached = illustrate_slides(
+                        db,
+                        illustration_project,
+                        intent_dict["slides"],
+                        user_id=task.user_id or illustration_project.owner_id,
+                        on_progress=lambda done, total: _illustration_progress(db, task, done, total),
+                    )
+                    if attached:
+                        # JSON 列不感知原地修改，必须显式回写才会持久化。
+                        artifact_version.snapshot_json = intent_dict
+                        db.flush()
+                        logger.info("为 %s 页生成配图（任务 %s）", len(attached), task_id)
 
             # Step 5: 生成课件文件
-            pptx_path = _sync(generate_pptx(intent_dict, rag_docs, references))
-            touch_task(db, task, 80)
+            images = resolve_slide_images(db, task.project_id, intent_dict)
+            pptx_path = generate_pptx(intent_dict, rag_docs, references, images=images)
+            touch_task(db, task, "pptx")
 
-            docx_path = _sync(generate_docx(intent_dict, rag_docs, references))
-            touch_task(db, task, 90)
+            docx_path = generate_docx(intent_dict, rag_docs, references, images=images)
+            touch_task(db, task, "docx")
 
-            html_path = _sync(generate_html(intent_dict, rag_docs, references))
+            html_path = generate_html(intent_dict, rag_docs, references)
+            touch_task(db, task, "html")
 
             # Step 6: 记录输出
             outputs = _build_outputs(pptx_path, docx_path, html_path)
+            touch_task(db, task, "persist")
             _persist_output_files(
                 task.session_id,
                 outputs,
@@ -368,21 +433,6 @@ def _build_confirm_text(result: IntentResult) -> str:
     return "\n".join(lines)
 
 
-def _sync(coro):
-    """在同步上下文中运行异步函数。"""
-    import asyncio
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    else:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, coro)
-            return future.result()
-
-
 def _load_references(session_id: str, db: DBSession) -> list[ReferenceMaterial]:
     """加载该会话上传的参考资料并解析。"""
     from backend.models.file import FileRecord
@@ -395,9 +445,9 @@ def _load_references(session_id: str, db: DBSession) -> list[ReferenceMaterial]:
             continue
         try:
             if f.file_type == "pdf":
-                text = _sync(parse_pdf(str(path)))
+                text = parse_pdf(str(path))
             elif f.file_type == "word":
-                text = _sync(parse_docx(str(path)))
+                text = parse_docx(str(path))
             else:
                 continue
             refs.append(ReferenceMaterial(
@@ -410,6 +460,28 @@ def _load_references(session_id: str, db: DBSession) -> list[ReferenceMaterial]:
         except Exception:
             logger.exception("Failed to parse file %s", f.file_id)
     return refs
+
+
+def _plan_stage_sink(task_id: str) -> Callable[[str], None]:
+    """Forward blueprint sub-stages into the generation task.
+
+    构建蓝图是整条链路里最慢的一步，它内部的子阶段才是"AI 现在在做什么"最具体
+    的答案。这里用独立的短会话写进度，所以在蓝图还没建完时提交进度，也不会把
+    调用方正在建的蓝图一起提交掉。
+    """
+    from backend.db.database import SessionLocal
+
+    def forward(stage: str) -> None:
+        db = SessionLocal()
+        try:
+            task = db.query(Task).filter(Task.task_id == task_id).first()
+            if task is None:
+                return
+            touch_task(db, task, "plan", detail=stage)
+        finally:
+            db.close()
+
+    return forward
 
 
 def _build_outputs(pptx_path: str, docx_path: str, html_path: str) -> list[OutputFile]:

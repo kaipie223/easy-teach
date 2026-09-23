@@ -29,7 +29,11 @@ def normalize_chroma_path(path: str | Path) -> Path:
         return resolved
 
     system_drive = os.environ.get("SystemDrive", "C:")
-    return (Path(system_drive) / "easy-teach-runtime" / "chroma").resolve()
+    # `Path("C:")` 是盘符相对路径，不是盘根，.resolve() 会锚到当前工作目录（于是
+    # 路径跟着 CWD 漂移，且通不过"必须在 DATA_DIR 内"的生产校验）。补上分隔符得到
+    # 盘根，才是我们想要的 ASCII 运行时目录。
+    drive_root = Path(f"{system_drive}\\")
+    return (drive_root / "easy-teach-runtime" / "chroma").resolve()
 
 
 class Settings(BaseSettings):
@@ -45,6 +49,27 @@ class Settings(BaseSettings):
     deepseek_api_key_file: Path | None = None
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-v4-flash"
+    # Vision is opt-in. With no model configured an uploaded picture is stored but
+    # never described, and the analysis says so instead of pretending it was read.
+    deepseek_vision_model: str = ""
+
+    # 图像生成（火山方舟 ARK · Seedream），用于成果编辑里的"AI 生成配图"。
+    # 与视觉能力一样是可选能力：未配置 key 时接口返回明确的 IMAGE_GEN_NOT_CONFIGURED，
+    # 而不是静默失败或假装生成过。
+    ark_api_key: str = ""
+    ark_api_key_file: Path | None = None
+    ark_image_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
+    ark_image_model: str = "doubao-seedream-4-0-250828"
+    ark_image_size: str = "1024x1024"
+    ark_image_timeout_seconds: int = 180
+
+    # 生成课件时"每页自动配图"：在渲染产物之前给缺图页各生成一张插图，图片随这一版
+    # 一起落库，所以不会每配一张图就多一个成果版本。未配置 ARK key 时自动跳过，
+    # 单页失败也只跳过该页，不会让整份课件生成失败。
+    slide_illustration_enabled: bool = True
+    # 一份课件最多自动配几张：整册插图既慢又费额度，超出部分留给教师按需补
+    slide_illustration_limit: int = 8
+    slide_illustration_concurrency: int = 3
 
     # Authentication
     jwt_secret_key: str = "easy-teach-development-secret-change-me"
@@ -139,10 +164,17 @@ class Settings(BaseSettings):
             if not path.is_absolute():
                 setattr(self, field_name, (PROJECT_ROOT / path).resolve())
 
-        self.chroma_persist_dir = normalize_chroma_path(self.chroma_persist_dir)
+        # ASCII 重定向只是开发便利（仓库路径可能含中文，hnswlib 建不了非 ASCII 索引）；
+        # 生产环境 chroma 必须落在 DATA_DIR 内（下方有硬校验），重定向到盘根会出界，
+        # 所以生产不做重定向，由运维保证 DATA_DIR 是 ASCII 路径。
+        if self.environment.lower() in {"production", "prod"}:
+            self.chroma_persist_dir = Path(self.chroma_persist_dir).expanduser().resolve()
+        else:
+            self.chroma_persist_dir = normalize_chroma_path(self.chroma_persist_dir)
 
         for field_name, target_name in (
             ("deepseek_api_key_file", "deepseek_api_key"),
+            ("ark_api_key_file", "ark_api_key"),
             ("jwt_secret_key_file", "jwt_secret_key"),
         ):
             secret_path = getattr(self, field_name)

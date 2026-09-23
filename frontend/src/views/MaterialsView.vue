@@ -21,7 +21,7 @@
       <template #title>
         <div class="alert-content">
           <span>{{ pageError }}</span>
-          <el-button text type="danger" @click="loadCurrentProject">重试</el-button>
+          <el-button text type="danger" @click="loadCurrentProject()">重试</el-button>
         </div>
       </template>
     </el-alert>
@@ -39,7 +39,7 @@
             <h2>上传参考资料</h2>
             <p>PDF、Word 和 PPT 会提取证据；图片仅保存原文件，视觉与视频解析暂未启用。</p>
           </div>
-          <el-button :loading="loadingMaterials" text @click="loadCurrentProject">
+          <el-button :loading="loadingMaterials" text @click="loadCurrentProject()">
             <el-icon><Refresh /></el-icon>
             刷新
           </el-button>
@@ -143,7 +143,17 @@
                 <td>{{ fileTypeLabel(material.file_type) }}</td>
                 <td>{{ formatBytes(material.size_bytes) }}</td>
                 <td>
-                  <div class="progress-track">
+                  <!-- 后端按资料类型给出真实阶段（图片多一步视觉识别，视频多一步转录解析） -->
+                  <StageProgress
+                    v-if="materialIsParsing(material)"
+                    class="material-progress"
+                    :percent="material.stage_percent"
+                    :label="material.stage_label || materialStatusLabel(material.status, material.file_type)"
+                    :steps="material.stages"
+                    :current="material.stage"
+                    :started-at="material.stage_started_at"
+                  />
+                  <div v-else class="progress-track">
                     <div
                       :class="['progress-fill', material.status === 'processing' ? 'loading' : '']"
                       :style="{ width: `${materialProgress(material)}%` }"
@@ -317,6 +327,8 @@ import {
   replaceMaterialBindings,
   uploadProjectMaterial,
 } from '@/api'
+import StageProgress from '@/components/progress/StageProgress.vue'
+import { SSEClient } from '@/utils/sse'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
 
@@ -335,8 +347,10 @@ const uploadNote = ref('')
 const fileInput = ref(null)
 const detailsVisible = ref(false)
 const selectedMaterial = ref(null)
-const pollTimer = ref(null)
 const isUnmounted = ref(false)
+let progressStream = null
+let reconnectTimer = null
+let subscribedProjectId = null
 
 const usageOptions = [
   { value: 'content_basis', label: '内容依据' },
@@ -370,7 +384,7 @@ const evidenceSnips = computed(() =>
 onMounted(loadProjectContext)
 onBeforeUnmount(() => {
   isUnmounted.value = true
-  clearMaterialPolling()
+  stopProgressStream()
 })
 
 async function loadProjectContext() {
@@ -389,7 +403,7 @@ async function loadProjectContext() {
 async function loadCurrentProject(options = {}) {
   const silent = Boolean(options.silent)
   if (!selectedProjectId.value) {
-    clearMaterialPolling()
+    stopProgressStream()
     materials.value = []
     return
   }
@@ -404,7 +418,7 @@ async function loadCurrentProject(options = {}) {
     materials.value = []
   } finally {
     if (!silent) loadingMaterials.value = false
-    scheduleMaterialPolling()
+    ensureProgressStream()
   }
 }
 
@@ -554,6 +568,7 @@ async function openSource(material) {
   }
 }
 
+/** 这个猜测的百分比只在解析还没真正开始时兜底用；解析中一律用后端真实阶段。 */
 function materialProgress(material) {
   return {
     uploaded: 15,
@@ -563,6 +578,11 @@ function materialProgress(material) {
     failed: 100,
     archived: 100,
   }[material.status] || 0
+}
+
+/** 解析中：后端已经按资料类型给出了阶段，此时不该再用前端猜的百分比。 */
+function materialIsParsing(material) {
+  return material.status === 'processing' && Boolean(material.stage)
 }
 
 function materialStatusLabel(status, fileType) {
@@ -608,20 +628,45 @@ function locatorLabel(locator = {}) {
   return '来源定位'
 }
 
-function scheduleMaterialPolling() {
-  clearMaterialPolling()
-  if (isUnmounted.value) return
-  if (!materials.value.some(material => ['queued', 'processing'].includes(material.status))) return
-  pollTimer.value = window.setTimeout(() => {
-    if (isUnmounted.value) return
-    loadCurrentProject({ silent: true })
-  }, 2500)
+/**
+ * 订阅项目级进度流，替代原先 2.5 秒一次的整项目轮询。
+ * 解析状态变化时再拉取一次完整资料（含绑定与证据），空闲时零请求。
+ */
+function ensureProgressStream() {
+  if (isUnmounted.value || !selectedProjectId.value) return
+  if (progressStream && subscribedProjectId === selectedProjectId.value) return
+  stopProgressStream()
+  subscribedProjectId = selectedProjectId.value
+  progressStream = new SSEClient(
+    `/api/v1/projects/${selectedProjectId.value}/events`,
+    {
+      onProgress: () => { loadCurrentProject({ silent: true }) },
+      onError: () => { scheduleReconnect() },
+      // 服务端在监听时长上限后会关闭长连接，这里自动重新订阅。
+      onDone: () => { scheduleReconnect() },
+    },
+    // 该端点只提供 GET，用默认的 POST 会 405
+    { method: 'GET' },
+  )
+  progressStream.connect()
 }
 
-function clearMaterialPolling() {
-  if (!pollTimer.value) return
-  window.clearTimeout(pollTimer.value)
-  pollTimer.value = null
+function stopProgressStream() {
+  if (reconnectTimer) {
+    window.clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  progressStream?.disconnect()
+  progressStream = null
+  subscribedProjectId = null
+}
+
+function scheduleReconnect() {
+  if (isUnmounted.value || !selectedProjectId.value || reconnectTimer) return
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = null
+    ensureProgressStream()
+  }, 3000)
 }
 
 function isImageFile(file) {
