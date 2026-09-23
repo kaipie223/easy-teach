@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 from fractions import Fraction
 from pathlib import Path
@@ -12,6 +13,9 @@ from .utils import ensure_dir, sample_timestamps
 
 class FFmpegError(RuntimeError):
     """Raised when ffmpeg or ffprobe cannot process a video."""
+
+
+logger = logging.getLogger(__name__)
 
 
 def probe_video(video_path: Path) -> VideoMetadata:
@@ -221,7 +225,14 @@ def extract_sample_keyframes(
     frames: list[tuple[float, Path]] = []
     for index, timestamp in enumerate(sample_timestamps(duration_seconds, max_frames), start=1):
         frame_path = output_dir / f"sample_{index:03d}.jpg"
-        extract_frame(video_path, timestamp, frame_path, output_width=output_width)
+        try:
+            extract_frame(video_path, timestamp, frame_path, output_width=output_width)
+        except FFmpegError as exc:
+            # 逐帧容错：单帧失败只跳过该帧，已经写盘的帧必须保留。
+            # 以前这里整体抛出，调用方的 except 会把它降级为 warning，
+            # 于是该视频的 keyframe 列表直接变成空 —— 与 profile 分支的行为不一致。
+            logger.warning("sample frame %d at %.3fs failed: %s", index, timestamp, exc)
+            continue
         if frame_path.exists():
             frames.append((timestamp, frame_path))
     return frames
@@ -246,8 +257,10 @@ def extract_frame(video_path: Path, timestamp_seconds: float, frame_path: Path, 
             str(frame_path),
         ]
     )
-    if not frame_path.exists():
-        raise FFmpegError(f"Frame extraction did not create {frame_path}.")
+    # 与 extract_video_segment 用同一条标准：ffmpeg "成功"但产出 0 字节文件时
+    # 不能当成有效帧，否则空文件会一路进入关键帧 / IR。
+    if not frame_path.exists() or frame_path.stat().st_size <= 0:
+        raise FFmpegError(f"Frame extraction did not create a usable image: {frame_path}")
     return frame_path
 
 
