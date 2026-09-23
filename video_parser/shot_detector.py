@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,9 @@ from .utils import ensure_dir
 
 class ShotDetectionError(RuntimeError):
     """Raised when OpenCV cannot read or split a video."""
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -68,7 +72,9 @@ def detect_shots(
         representative_timestamp = _representative_timestamp(start, end, duration_seconds)
         shot_id = f"shot_{len(shots) + 1:03d}"
         frame_path = frame_dir / f"{shot_id}.jpg"
-        _save_representative_frame(video_path, representative_timestamp, frame_path, config, cv2)
+        representative_timestamp = _save_representative_frame(
+            video_path, representative_timestamp, frame_path, config, cv2
+        )
         shots.append(
             ShotSegmentData(
                 shot_id=shot_id,
@@ -86,7 +92,7 @@ def detect_shots(
         shot_id = "shot_001"
         timestamp = _representative_timestamp(0.0, duration_seconds, duration_seconds)
         frame_path = frame_dir / f"{shot_id}.jpg"
-        _save_representative_frame(video_path, timestamp, frame_path, config, cv2)
+        timestamp = _save_representative_frame(video_path, timestamp, frame_path, config, cv2)
         shots.append(
             ShotSegmentData(
                 shot_id=shot_id,
@@ -168,16 +174,26 @@ def _prepare_frame_dir(output_dir: Path) -> Path:
     return frame_dir
 
 
-def _save_representative_frame(video_path: Path, timestamp_seconds: float, frame_path: Path, config: ShotDetectionConfig, cv2) -> None:
+def _save_representative_frame(video_path: Path, timestamp_seconds: float, frame_path: Path, config: ShotDetectionConfig, cv2) -> float:
+    """保存代表帧，并返回**实际使用**的时间戳。
+
+    定位失败时会回退到视频首帧；此时必须把时间戳一并改成 0.0 返回，否则
+    第 20 分钟的画面会以 20:00 的名义进入 IR 与课件（静默失真）。
+    """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         raise ShotDetectionError(f"OpenCV cannot open video: {video_path}")
+    actual_timestamp = max(0.0, timestamp_seconds)
     try:
-        cap.set(cv2.CAP_PROP_POS_MSEC, max(0.0, timestamp_seconds) * 1000.0)
+        cap.set(cv2.CAP_PROP_POS_MSEC, actual_timestamp * 1000.0)
         ok, frame = cap.read()
         if not ok:
             cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
             ok, frame = cap.read()
+            actual_timestamp = 0.0
+            logger.warning(
+                "representative frame for %s fell back to the first frame", frame_path.name
+            )
         if not ok:
             raise ShotDetectionError(f"Cannot read representative frame from: {video_path}")
 
@@ -186,6 +202,7 @@ def _save_representative_frame(video_path: Path, timestamp_seconds: float, frame
         if not ok:
             raise ShotDetectionError(f"Cannot encode representative frame: {frame_path}")
         frame_path.write_bytes(encoded.tobytes())
+        return actual_timestamp
     finally:
         cap.release()
 

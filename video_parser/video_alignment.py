@@ -145,6 +145,14 @@ def collect_alignment_anchors(
         shot_id = str(getattr(shot, "shot_id", getattr(shot, "id", "shot")))
         start = _number(getattr(shot, "start_seconds", None))
         end = _number(getattr(shot, "end_seconds", None))
+        if start is None and end is None:
+            # ParsedVideoSegment 只有 time_range，没有 start_seconds/end_seconds。
+            # 以前这里静默取到 None，这类镜头贡献 0 个锚点，边界分数系统性偏低、
+            # review_required 误报增多。
+            time_range = getattr(shot, "time_range", None)
+            if time_range is not None:
+                start = _number(getattr(time_range, "start_seconds", None))
+                end = _number(getattr(time_range, "end_seconds", None))
         if start is not None:
             anchors.append(BoundaryAnchor(start, "shot_start", shot_id, 0.20))
         if end is not None:

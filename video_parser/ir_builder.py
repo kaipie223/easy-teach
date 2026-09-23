@@ -264,9 +264,11 @@ def build_teaching_content_ir(
         previous_unit_id = unit.id
 
     relations = _build_relations(units)
+    # 这里原本写作 `if item.id not in all_refs(units)`：item.id 是 relation id，
+    # all_refs 返回的是 evidence id，两者永不相交，条件恒真 —— 等于无条件全量
+    # extend。删掉这层"看起来在过滤"的假逻辑，写成它实际的行为。
     for item in relations:
-        if item.id not in all_refs(units):
-            all_source_refs.extend(item.evidence_refs)
+        all_source_refs.extend(item.evidence_refs)
 
     assets = list(asset_refs or [])
     evidence_coverage = _evidence_coverage(units, evidence_by_id)
@@ -1054,18 +1056,27 @@ def _evidence_id_for_source(items: list[EvidenceItem], source_id: str, evidence_
 
 
 def _result_conflicts_for_ir(parsed: VideoParseResult) -> list[ConflictItem]:
-    """Project v0.3 parser conflicts into the stable IR conflict contract."""
+    """Project v0.3 parser conflicts into the stable IR conflict contract.
+
+    取舍（显式记录）：IR 的 ConflictItem 没有 candidate_id / model_value /
+    local_value 三个字段，而它们是 parser 侧 0.3 契约的一部分。这里不新增 IR
+    字段（避免动 IR schema），改为把三者**带标签**压进 candidate_values：
+    信息不丢，但结构被压平；需要结构化对读时回到 source/video_parse_result.json。
+    """
 
     projected: list[ConflictItem] = []
     for item in parsed.conflicts:
         values: list[str] = []
-        for value in (item.model_value, item.local_value):
+        # 冲突挂在哪条候选上必须留下，否则压平后无法回溯到具体 candidate。
+        if item.candidate_id:
+            values.append(f"candidate_id={item.candidate_id}")
+        for label, value in (("model_value", item.model_value), ("local_value", item.local_value)):
             if value is None:
                 continue
             if isinstance(value, str):
-                values.append(value[:500])
+                values.append(f"{label}={value[:500]}")
             else:
-                values.append(json.dumps(value, ensure_ascii=False, default=str)[:500])
+                values.append(f"{label}={json.dumps(value, ensure_ascii=False, default=str)[:500]}")
         projected.append(
             ConflictItem(
                 id=item.id,
@@ -1142,10 +1153,6 @@ def _unique(values: list[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
-
-
-def all_refs(units: list[TeachingUnit]) -> set[str]:
-    return {ref for unit in units for ref in unit.evidence_refs}
 
 
 def _shorten(value: str, limit: int) -> str:
