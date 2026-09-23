@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -196,6 +197,11 @@ def _read_visual_signals(video_path: Path, duration_seconds: float, config: Keyf
         raise KeyframeStrategyError(f"OpenCV cannot open video: {video_path}")
 
     fps = capture.get(cv2.CAP_PROP_FPS) or 25.0
+    # NaN / inf 是真值，会被 `or` 原样保留，随后 int(round(...)) 对 NaN 抛
+    # ValueError、对 inf 抛 OverflowError —— 两者都不在调用方的捕获列表里，
+    # 非 strict 模式也会整体失败。只接受有限且为正的帧率。
+    if not math.isfinite(fps) or fps <= 0:
+        fps = 25.0
     sample_step = max(1, int(round(fps / config.sample_fps)))
     frame_index = 0
     previous = None
