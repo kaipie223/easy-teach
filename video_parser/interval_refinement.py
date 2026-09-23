@@ -310,6 +310,15 @@ def _refine_one_interval(
         for item in evidence
         if item.time_range is not None and item.evidence_type in {"ocr", "visual"}
     ]
+    # 形参承诺的"与已有证据对齐"必须真的发生：把同一窗口内已存在的证据时间戳
+    # 一起纳入 refined range，否则局部二次取证的结果会与全局证据时间轴脱节。
+    for item in existing_evidence or []:
+        time_range = getattr(item, "time_range", None)
+        if time_range is None:
+            continue
+        start_value = float(time_range.start_seconds)
+        if buffered_start <= start_value <= buffered_end:
+            evidence_timestamps.append(start_value)
     refined_start, refined_end = _refined_range(
         evidence_timestamps,
         requested_start=requested_start,
