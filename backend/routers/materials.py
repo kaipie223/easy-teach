@@ -33,8 +33,6 @@ from backend.services.image_generation import (
 )
 from backend.services.materials import (
     MaterialValidationError,
-    ParsedChunk,
-    ParsedMaterial,
     apply_parsed_material,
     detect_file_type_from_path,
     fail_material_analysis,
@@ -45,12 +43,12 @@ from backend.services.progress import label_of, manifest, material_stages, perce
 from backend.services.slide_illustration import store_generated_image
 from backend.services.limits import (
     consume_model_quota,
-    ensure_storage_capacity,
+    consume_video_parse_quota,
+    ensure_task_capacity,
     remaining_storage_bytes,
 )
 from backend.services.uploads import (
     UploadSizeExceeded,
-    checksum_file,
     remove_managed_file,
     remove_staged_upload,
     stream_upload_to_path,
@@ -165,6 +163,33 @@ async def upload_material(
             status_code=409,
             suggested_action="请先上传 PDF、Word 或 PPT 资料",
         )
+
+    if file_type == "video":
+        duplicate = (
+            db.query(Material)
+            .filter(
+                Material.owner_id == user.user_id,
+                Material.project_id == project.project_id,
+                Material.checksum_sha256 == stored.checksum_sha256,
+                Material.file_type == "video",
+                Material.deleted_at.is_(None),
+            )
+            .first()
+        )
+        if duplicate is not None:
+            remove_staged_upload(stored_path)
+            raise ApiError(
+                "同一视频已上传，请查看现有解析状态",
+                code="VIDEO_MATERIAL_EXISTS",
+                status_code=409,
+                details={"material_id": duplicate.material_id, "status": duplicate.status},
+            )
+        try:
+            ensure_task_capacity(db, user.user_id)
+            consume_video_parse_quota(user.user_id)
+        except ApiError:
+            remove_staged_upload(stored_path)
+            raise
 
     if file_type == "image" and stored.size_bytes > 15 * 1024 * 1024:
         remove_staged_upload(stored_path)

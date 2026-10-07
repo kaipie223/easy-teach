@@ -68,6 +68,8 @@ def render_export_task(self, export_id: str):
     max_retries=10,
     acks_late=True,
     reject_on_worker_lost=True,
+    time_limit=settings.video_parser_task_time_limit_seconds,
+    soft_time_limit=settings.video_parser_task_soft_time_limit_seconds,
 )
 def parse_material_task(self, analysis_id: str):
     try:

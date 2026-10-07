@@ -51,8 +51,9 @@ class RefinementConfig:
     whiteboard_fps: float = 3.0
     operation_fps: float = 6.0
     default_fps: float = 1.0
-    max_intervals: int = 24
-    max_frames_per_interval: int = 120
+    max_intervals: int = 6
+    max_frames_per_interval: int = 12
+    max_visual_frames_per_interval: int = 4
     output_width: int = 960
     dedup_distance: int = 5
     run_ocr: bool = True
@@ -112,7 +113,12 @@ def refine_candidate_intervals(
         raise RefinementError("duration_seconds must be positive")
     if not video_path.is_file():
         raise RefinementError(f"video file does not exist: {video_path}")
-    if config.buffer_seconds < 0 or config.max_intervals < 0 or config.max_frames_per_interval <= 0:
+    if (
+        config.buffer_seconds < 0
+        or config.max_intervals < 0
+        or config.max_frames_per_interval <= 0
+        or config.max_visual_frames_per_interval <= 0
+    ):
         raise RefinementError("invalid refinement budget configuration")
 
     candidates = _flatten_intervals(understanding)
@@ -251,7 +257,7 @@ def _refine_one_interval(
         evidence.append(_keyframe_evidence(frame, refinement_id, interval.interval_id))
 
     ocr_frames = _select_ocr_frames(frames, text_density_detector, config.text_density_threshold)
-    visual_frames = _select_visual_frames(frames)
+    visual_frames = _select_visual_frames(frames, config.max_visual_frames_per_interval)
     ocr_failures = 0
     visual_failures = 0
     ocr_success = 0
@@ -517,12 +523,19 @@ def _select_ocr_frames(frames: list[Keyframe], detector: TextDensityDetector, th
     return selected
 
 
-def _select_visual_frames(frames: list[Keyframe]) -> list[Keyframe]:
-    if len(frames) <= 8:
+def _select_visual_frames(frames: list[Keyframe], max_frames: int) -> list[Keyframe]:
+    """Select evenly distributed frames without exceeding the paid-call budget."""
+
+    if not frames or max_frames <= 0:
+        return []
+    if len(frames) <= max_frames:
         return list(frames)
-    indexes = {0, len(frames) - 1}
-    step = max(1, len(frames) // 6)
-    indexes.update(range(0, len(frames), step))
+    if max_frames == 1:
+        return [frames[len(frames) // 2]]
+    indexes = {
+        round(index * (len(frames) - 1) / (max_frames - 1))
+        for index in range(max_frames)
+    }
     return [frame for index, frame in enumerate(frames) if index in indexes]
 
 
