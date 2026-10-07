@@ -200,8 +200,13 @@ def test_fixed_case_local_rag_and_blueprint(case, monkeypatch):
     assert any(document.source == case["source"] for document in documents)
 
     report = inspect_courseware(plan)
+    # 模板编译是确定性兜底，必须直接通过质检：它以前只把 brief 拼成短句
+    # （讲稿 20 余字、每环节师生活动各 1 条、打印要点一句话），现在要写到
+    # 教师能照着上的程度，翔实度检查因此不再报 warning。
     assert report["status"] == "passed", report
     assert report["metrics"]["evidence_ref_count"] == len(plan.evidence_refs)
+    assert report["metrics"]["speaker_notes_chars_min"] >= 80
+    assert report["metrics"]["checklist_items"] >= 4
 
 
 @pytest.mark.parametrize("case", FIXED_CASES, ids=[case["id"] for case in FIXED_CASES])

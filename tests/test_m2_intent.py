@@ -61,6 +61,16 @@ def test_intent_adapter_normalizes_nullable_fields():
     assert result.is_complete is False
 
 
+def test_intent_adapter_keeps_subject_grade_and_course_name():
+    """提示词与 Schema 一直在要学科/学段/课程名，解析层以前把它们丢了。"""
+    result = IntentAnalyzer._parse_intent(
+        {"course_name": "浮力", "subject": "物理", "grade": "初二", "is_complete": False}
+    )
+    assert result.course_name == "浮力"
+    assert result.subject == "物理"
+    assert result.grade == "初二"
+
+
 def test_intent_adapter_rejects_non_object_response():
     with pytest.raises(TypeError, match="JSON object"):
         IntentAnalyzer._parse_intent(None)

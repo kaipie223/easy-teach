@@ -1,0 +1,237 @@
+/**
+ * 设计令牌（Design Tokens）—— 全站唯一色值与尺度的来源。
+ *
+ * 规则（改这一层，而不是改页面）：
+ *   1. 组件里禁止出现裸十六进制色、禁止纯黑阴影、禁止非 4 倍数的间距。
+ *   2. 语义层（--text-* / --bg-* / --border-* / --shadow-*）是页面唯一该引用的东西；
+ *      原始色阶（--neutral-* / --brand-*）只给语义层使用。
+ *   3. 亮/暗模式在此文件内一次做对：暗色只覆盖语义层，不改原始色阶。
+ *      1.0 暂不放出切换入口，但体系必须到位（否则将来要返工数百处硬编码色）。
+ *
+ * 断点说明：媒体查询里不能用 var()，全站只允许这四个：
+ *   480px / 768px / 1024px / 1440px
+ */
+
+:root {
+  /* ── 1. 原始色阶：Stripe 式微冷中性灰（带一点蓝，避免"死灰"） ── */
+  --neutral-0: #ffffff;
+  --neutral-25: #fbfcfe;
+  --neutral-50: #f7f9fc;
+  --neutral-75: #f6f9fc;   /* 规格指定的页面底 */
+  --neutral-100: #f3f6fa;
+  --neutral-150: #eef2f7;
+  --neutral-200: #e6ebf1;
+  --neutral-300: #d8dee9;
+  --neutral-400: #b6bfcc;
+  --neutral-450: #94a3b8;  /* 仅占位符/装饰，禁止当正文 */
+  --neutral-500: #64748b;  /* 次要正文下限：白底 4.76:1 */
+  --neutral-600: #4b5768;
+  --neutral-700: #3c4257;
+  --neutral-800: #1f2937;
+  --neutral-900: #0f172a;  /* 主文字 */
+
+  /* ── 2. 品牌青蓝 #00C4B6（与 Logo 同色，教育场景更亲和） ────── */
+  --brand-50: #e6f9f8;
+  --brand-100: #ccf3f0;
+  --brand-200: #b3ede9;
+  --brand-300: #80e1da;
+  --brand-400: #4dd5cc;
+  --brand-500: #00c4b6;    /* 基准主色 */
+  --brand-600: #00b0a3;
+  --brand-700: #009d92;    /* 按下态 / 白底上的品牌文字色 */
+  --brand-800: #00857c;
+  --brand-900: #006b64;
+
+  /* ── 3. 语义状态色（必须配图标或文案，不能只靠颜色传意） ─────
+     -500 是"图形色"（图标、边框、实心按钮）；-600 是"浅底文字色"，
+     与对应的 -50 底搭配必须 ≥ 4.5:1（实测 -500 只有 2.5~3.1，不达标）。 */
+  --success-500: #0f9d76;
+  --success-600: #0b7a5c;    /* on success-50：浅底文字 */
+  --success-50: #e8f8f2;
+  --warning-500: #d97706;
+  --warning-600: #a14505;    /* on warning-50：浅底文字 */
+  --warning-50: #fef6e7;
+  --danger-500: #dc2626;
+  --danger-600: #b91c1c;     /* on danger-50：浅底文字 */
+  --danger-50: #fdecec;
+  --info-500: #0ea5e9;
+  --info-600: #0369a1;       /* on info-50：浅底文字 */
+  --info-50: #e8f6fe;
+
+  /* ── 4. 幻灯片画布配色：预览必须与导出的 PPTX 一致 ──────────
+     这一组刻意不跟随应用主色：它模拟的是"投影出来的那一页"。
+
+     ⚠ 下面的值只是**加载前的兜底**。真正的值由后端主题层下发
+     （GET /api/v1/slide-theme → services/slide_theme.py），main.js 启动时会写成
+     内联变量覆盖这里。改主题只改 slide_theme.py 一处，**不要**再手改这份副本；
+     这里与主题是否一致由 tests/test_slide_theme_contract.py 守着。
+
+     历史教训：这组值曾手抄一份、注释写着"要同时改 generator.py"，后来配色搬进
+     主题层没人跟着改，于是同一页在应用里预览是亮蓝、导出却是学术蓝。 */
+  --slide-canvas-bg: #ffffff;
+  --slide-canvas-border: #d8dfe9;   /* 预览外框：应用自己的卡片描边，不属于幻灯片内容 */
+  --slide-primary: #315ca2;              /* = COLOR_PRIMARY 主蓝 */
+  --slide-accent: #24467c;              /* = COLOR_BAND 深一档的蓝 */
+  --slide-accent-soft-bg: #ededed;      /* = COLOR_PANEL 内容区浅灰底 */
+  --slide-accent-soft-border: #c8c8c8;  /* = COLOR_LINE 内容框细边框 */
+  --slide-chip-bg: #e8eef8;             /* = COLOR_SURFACE 徽标/标签底 */
+  --slide-warn-text: #c2410c;           /* = COLOR_ACCENT 暖色文字 */
+  /* 冷暖对照与装饰块：整册只有一支蓝会显得素，需要一个暖色强调 + 两种几何浅块 */
+  --slide-warm: #f0700a;                /* = COLOR_WARM */
+  --slide-decor: #e8eef8;               /* = COLOR_DECOR 封面装饰块 */
+  --slide-decor-warm: #ffe7cc;          /* = COLOR_DECOR_WARM 暖色装饰圆 */
+  --slide-track: #e1e1e1;               /* = COLOR_TRACK 进度条底槽 */
+
+  /* ── 5. 文件类型标识色（仅用作小图标底色，不参与主色体系） ── */
+  --file-pdf: #dc2626;
+  --file-word: #3b82f6;
+  --file-ppt: #f97316;
+  --file-sheet: #16a34a;
+  --file-image: #0f9d76;
+  --file-video: #7c3aed;
+}
+
+/* ── 4. 语义令牌：页面只引用这一层 ─────────────────────────────── */
+:root {
+  /* 背景 */
+  --bg-page: var(--neutral-75);
+  --bg-surface: var(--neutral-0);          /* 悬浮白卡 */
+  --bg-surface-sunken: var(--neutral-100); /* 卡内次级区块 */
+  --bg-hover: var(--neutral-100);
+  --bg-active: var(--brand-50);
+  --bg-inverse: var(--neutral-900);
+
+  /* 文字 */
+  --text-primary: var(--neutral-900);
+  --text-secondary: var(--neutral-700);
+  --text-tertiary: var(--neutral-500);
+  --text-disabled: var(--neutral-450);  /* 只用于禁用态/占位符 */
+  --text-inverse: var(--neutral-0);
+  /* 品牌文字色：白底上必须 ≥ 4.5:1。brand-700 只有 3.37，
+     所以正文里的品牌色一律用 800（4.52:1）；500/600 只留给图形与实心底。 */
+  --text-brand: var(--brand-800);
+
+  /* 边框：极浅、透明感，禁止深色硬线 */
+  --border-hairline: rgba(15, 23, 42, 0.05);
+  --border-light: #e4e7eb;
+  --border-default: var(--neutral-200);
+  --border-strong: var(--neutral-300);
+  /* 品牌边框/图标（选中态、激活态）：图形类对比度按 3:1 要求，
+     brand-500 只有 2.19:1，故这一档用 700（3.37:1）。
+     组件一律引用语义层，不得直接写 var(--brand-500)。 */
+  --border-brand: var(--brand-700);
+
+  /* 阴影：Stripe 多层蓝调弥散；全站只允许这三层 */
+  --shadow-card: 0 2px 5px -1px rgba(50, 50, 93, 0.25), 0 1px 3px -1px rgba(0, 0, 0, 0.3);
+  --shadow-raised: 0 13px 27px -5px rgba(50, 50, 93, 0.25), 0 8px 16px -8px rgba(0, 0, 0, 0.3);
+  --shadow-overlay: 0 30px 60px -12px rgba(50, 50, 93, 0.25), 0 18px 36px -18px rgba(0, 0, 0, 0.3);
+  --shadow-hairline: 0 0 0 1px var(--border-hairline);
+
+  /* 焦点光环：所有可交互元素统一（自绘导航、图标按钮也不例外） */
+  --ring-brand: 0 0 0 3px rgba(0, 196, 182, 0.2);
+  --ring-danger: 0 0 0 3px rgba(220, 38, 38, 0.18);
+  --ring-inverse: 0 0 0 3px rgba(255, 255, 255, 0.35); /* 深色沉浸面上的焦点 */
+
+  /* 沉浸式深色面（开场动画、全屏预览等） */
+  --surface-immersive: #0b1120;
+  --surface-immersive-text: #ffffff;
+
+  /* 渐变：仅营销层与空态（静态，天然满足 reduced-motion） */
+  --gradient-brand: linear-gradient(135deg, #00c4b6 0%, #0ea5e9 100%);
+  --gradient-mesh:
+    radial-gradient(at 12% 18%, rgba(0, 196, 182, 0.28) 0px, transparent 55%),
+    radial-gradient(at 82% 8%, rgba(14, 165, 233, 0.24) 0px, transparent 50%),
+    radial-gradient(at 68% 88%, rgba(99, 91, 255, 0.16) 0px, transparent 55%),
+    radial-gradient(at 28% 78%, rgba(0, 196, 182, 0.16) 0px, transparent 50%);
+
+  /* 圆角：外卡大、内控件小 */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* 间距：4 的倍数，不再造 10/14/18/22 这类中间值 */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 字号：收敛 7 档 */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 15px;
+  --text-md: 17px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+  --text-2xl: 32px;
+
+  --leading-tight: 1.25;
+  --leading-snug: 1.4;
+  --leading-normal: 1.6;
+  --leading-relaxed: 1.75;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  /* 系统字体优先，不额外下载字体（中文加负字距会变难读，故不设） */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* 容器宽度：文档型 / 阅读型 / 工作区 */
+  --container-doc: 1024px;     /* max-w-5xl */
+  --container-reading: 720px;  /* 对话列、长文 */
+  --container-wide: 1280px;    /* 蓝图表格、成果编辑 */
+
+  /* 动效：微交互 120~200ms，只动 transform / opacity */
+  --duration-fast: 120ms;
+  --duration-base: 160ms;
+  --duration-slow: 200ms;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* 层级 */
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-overlay: 40;
+  --z-modal: 60;
+  --z-toast: 1000;
+}
+
+/* ── 5. 暗色：只覆盖语义层；1.0 不放出入口，但体系先就位 ───────── */
+[data-theme="dark"] {
+  --bg-page: #0b1120;
+  --bg-surface: #131a2a;
+  --bg-surface-sunken: #0f1524;
+  --bg-hover: #1b2436;
+  --bg-active: rgba(0, 196, 182, 0.14);
+  --bg-inverse: var(--neutral-0);
+
+  --text-primary: #eef2f7;
+  --text-secondary: #c3ccd9;
+  --text-tertiary: #9aa7b8;
+  --text-disabled: #6b7789;
+  --text-inverse: var(--neutral-900);
+  --text-brand: var(--brand-300);
+
+  --border-hairline: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.1);
+  --border-default: rgba(255, 255, 255, 0.14);
+  --border-strong: rgba(255, 255, 255, 0.2);
+
+  /* 暗色下阴影要更深更实，否则"浮起"失效 */
+  --shadow-card: 0 2px 5px -1px rgba(0, 0, 0, 0.5), 0 1px 3px -1px rgba(0, 0, 0, 0.6);
+  --shadow-raised: 0 13px 27px -5px rgba(0, 0, 0, 0.55), 0 8px 16px -8px rgba(0, 0, 0, 0.6);
+  --shadow-overlay: 0 30px 60px -12px rgba(0, 0, 0, 0.65), 0 18px 36px -18px rgba(0, 0, 0, 0.7);
+}

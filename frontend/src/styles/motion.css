@@ -1,0 +1,78 @@
+/**
+ * 动效层：只保留"有意义、可关闭"的动效。
+ *
+ * 约束：120~320ms；只动 transform / opacity（不触发布局重排）；
+ * 每个视图最多 1~2 处动效；prefers-reduced-motion 下由 base.css 统一关闭。
+ */
+
+/* ── 页面切换：淡入轻上浮，退场更快 ───────────────────────── */
+.page-enter-active {
+  transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out);
+}
+
+.page-leave-active {
+  transition: opacity 120ms var(--ease-standard);
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.page-leave-to { opacity: 0; }
+
+/* ── 入场：淡入上浮 ──────────────────────────────────────── */
+@keyframes motion-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.motion-rise {
+  animation: motion-rise 320ms var(--ease-out) both;
+}
+
+/* ── 列表错峰入场：每项 +40ms，最多 8 项（再多就不加了，避免久等） ── */
+.motion-stagger > * {
+  animation: motion-rise 300ms var(--ease-out) both;
+}
+
+.motion-stagger > *:nth-child(1) { animation-delay: 0ms; }
+.motion-stagger > *:nth-child(2) { animation-delay: 40ms; }
+.motion-stagger > *:nth-child(3) { animation-delay: 80ms; }
+.motion-stagger > *:nth-child(4) { animation-delay: 120ms; }
+.motion-stagger > *:nth-child(5) { animation-delay: 160ms; }
+.motion-stagger > *:nth-child(6) { animation-delay: 200ms; }
+.motion-stagger > *:nth-child(7) { animation-delay: 240ms; }
+.motion-stagger > *:nth-child(8) { animation-delay: 280ms; }
+
+/* ── 点击反馈：轻微下压（不改变布局边界） ─────────────────── */
+.motion-press {
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.motion-press:active {
+  transform: scale(0.99);
+}
+
+/* ── 可交互卡片的悬浮抬升 ────────────────────────────────── */
+.motion-lift {
+  transition: transform var(--duration-base) var(--ease-standard),
+    box-shadow var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard);
+}
+
+.motion-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-raised);
+}
+
+/* ── 首个视图进入时的容器淡入（仅一次，不做滚动揭示） ─────── */
+.view-enter {
+  animation: motion-rise 260ms var(--ease-out) both;
+}

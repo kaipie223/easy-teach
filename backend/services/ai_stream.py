@@ -195,6 +195,10 @@ async def aiter_blocking_generator(source: Iterator[Any]) -> AsyncIterator[Any]:
         await task
 
 
+# 生产者线程抛出的异常用这个私有 kind 回传（不复用 "error"：那是业务帧名）。
+_PRODUCER_FAILED = "__producer_failed__"
+
+
 async def aiter_threaded_producer(
     run: Callable[[Callable[[str, Any], None]], None],
 ) -> AsyncIterator[tuple[str, Any]]:
@@ -212,7 +216,7 @@ async def aiter_threaded_producer(
         try:
             run(lambda kind, payload: events.put((kind, payload)))
         except BaseException as exc:  # noqa: BLE001 - re-raised in the consumer
-            events.put(("error", exc))
+            events.put((_PRODUCER_FAILED, exc))
         finally:
             events.put(None)
 
@@ -222,6 +226,12 @@ async def aiter_threaded_producer(
             item = await asyncio.to_thread(events.get)
             if item is None:
                 return
+            kind, payload = item
+            if kind == _PRODUCER_FAILED:
+                # 必须在消费端抛出，不能当普通帧转发：调用方拿到的是
+                # encode_sse(kind, payload)，转发一个异常对象只会让 json.dumps
+                # 崩在编码层，把真正的失败原因顶替成"生成失败"。
+                raise payload
             yield item
     finally:
         await task

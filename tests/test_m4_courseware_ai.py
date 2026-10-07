@@ -139,7 +139,9 @@ def test_ai_blueprint_is_normalized_and_evidence_bound():
     assert result.spec.slides[0].evidence_refs[0].evidence_id == "evidence-1"
     assert sum(section.duration_minutes for section in result.spec.lesson_sections) == 45
     assert result.model_name == "deepseek-v4-flash"
-    assert result.prompt_version == PROMPT_VERSION == "courseware-plan-v20-subject-adaptive"
+    # 提示词改版就要改版本号，所以这里钉住字面量：
+    #   v24 = 新增 scene 引擎（按教学目标自由搭建的动态模型）与教具拒绝修复轮
+    assert result.prompt_version == PROMPT_VERSION == "courseware-plan-v24-scene"
     assert result.spec.output_specs.docx.homework
     assert result.spec.output_specs.pdf.assessment_checklist
     assert result.spec.output_specs.html.interaction_ids == ["interaction_001"]

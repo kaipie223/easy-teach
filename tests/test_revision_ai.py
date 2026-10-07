@@ -53,7 +53,7 @@ def test_revision_ai_preserves_target_identity_and_other_content():
                 "比较两次示数差",
                 "分析示数差的方向",
                 "解释浮力与示数差的关系",
-                "这条要点超过页面规范，应由后端裁剪",
+                "补充说明：示数差只与排开液体的体积和密度有关",
             ],
             "speaker_notes": "先让学生预测，再测量并用示数差解释浮力。",
             "evidence_refs": [{"source_type": "fake", "source_name": "伪造来源"}],
@@ -76,7 +76,10 @@ def test_revision_ai_preserves_target_identity_and_other_content():
     assert changed.layout == target.layout
     assert changed.evidence_refs == target.evidence_refs
     assert changed.title == "从测力计示数变化发现浮力"
-    assert len(changed.bullets) == snapshot.output_specs.pptx.max_bullets_per_slide
+    # 模型返回 6 条就保留 6 条：以前后端会按 max_bullets_per_slide 裁掉多余的，
+    # 教师"补充两条"却看不到效果。页面密度改由渲染器拆续页承接。
+    assert len(changed.bullets) == 6
+    assert changed.bullets[-1] == "补充说明：示数差只与排开液体的体积和密度有关"
     assert result.spec.slides[0] == original.slides[0]
     assert result.spec.lesson_sections == original.lesson_sections
     assert result.prompt_version == "artifact-target-v3"

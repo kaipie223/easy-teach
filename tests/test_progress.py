@@ -5,13 +5,49 @@ from backend.schemas import ExportFormat, FileType
 from backend.services.progress import (
     EXPORT_STAGES,
     GENERATION_STAGES,
+    PLAN_BRANCHES,
     PLAN_STAGES,
     REVISION_STAGES,
     export_stage_label,
+    label_of,
     material_stages,
+    percent_of,
 )
 
 from tests.test_m5_versioning import create_project_with_plan, empty_rag, register
+
+
+def test_every_reported_blueprint_stage_has_wording_and_a_nonzero_percent():
+    """蓝图流水线上报的每个阶段都必须在进度表里。
+
+    实测事故：agentic 流水线上报 skeleton / fill_teaching / fill_slides，而它们不在
+    PLAN_BRANCHES 里 —— percent_of 对未知 key 返回 0、label_of 返回 None，于是每上报
+    一次，进度条就被**打回 0**、文案停在上一句，教师看到的就是"一直在思考、进度条
+    不动"。缺一项就要在这里失败，而不是等跑了几分钟才被人发现。
+    """
+    reported = (
+        "skeleton",
+        "fill_teaching",
+        "fill_slides",
+        "review",
+        "persist",
+        "repair",
+        "review_repair",
+        "template",
+        "reused",
+    )
+    for stage in reported:
+        assert label_of(PLAN_STAGES, stage, PLAN_BRANCHES), f"{stage} 没有文案"
+        assert percent_of(PLAN_STAGES, stage, PLAN_BRANCHES) > 0, (
+            f"{stage} 的百分比是 0：进度条会被打回起点"
+        )
+
+    # 正常路径必须一路走高（repair / review_repair 是回头修复，不参与）
+    happy = [
+        percent_of(PLAN_STAGES, stage, PLAN_BRANCHES)
+        for stage in ("skeleton", "fill_teaching", "fill_slides", "review", "persist")
+    ]
+    assert happy == sorted(happy), happy
 
 
 def test_stage_percentages_never_go_backwards():

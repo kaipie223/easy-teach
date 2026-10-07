@@ -1,15 +1,16 @@
 <template>
   <div class="page-stack">
-    <header class="page-header">
-      <div>
-        <h1>我的知识库</h1>
-        <p>管理仅属于当前教师账号的教学资料；课程生成只检索你已启用并完成索引的文档。</p>
-      </div>
-      <el-button :loading="loading" text @click="loadDocuments">
-        <el-icon><Refresh /></el-icon>
-        刷新状态
-      </el-button>
-    </header>
+    <AppPageHeader
+      title="我的知识库"
+      subtitle="管理仅属于当前账号的教学资料；生成时只检索已启用并完成索引的文档。"
+    >
+      <template #actions>
+        <el-button :loading="loading" text @click="loadDocuments">
+          <el-icon><Refresh /></el-icon>
+          刷新状态
+        </el-button>
+      </template>
+    </AppPageHeader>
 
     <el-alert
       v-if="pageError"
@@ -94,12 +95,17 @@
       </div>
 
       <el-skeleton v-if="loading" :rows="5" animated />
-      <el-empty v-else-if="!documents.length" description="你的知识库还没有文档">
+      <AppEmptyState
+        v-else-if="!documents.length"
+        :icon="Collection"
+        title="知识库还是空的"
+        description="导入讲义、题库或课标文件，索引后即可作为生成的证据来源。"
+      >
         <el-button type="primary" @click="fileInput?.click()">
           <el-icon><Upload /></el-icon>
           导入第一份文档
         </el-button>
-      </el-empty>
+      </AppEmptyState>
       <template v-else>
         <el-alert
           v-if="indexing || documents.some(document => document.indexing)"
@@ -110,61 +116,64 @@
           :closable="false"
           class="indexing-alert"
         />
-        <div class="table-wrap">
-        <table class="data-table knowledge-table">
-          <thead>
-            <tr>
-              <th>文档</th>
-              <th>集合</th>
-              <th>类型</th>
-              <th>分段</th>
-              <th>索引状态</th>
-              <th>启用</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="document in documents" :key="document.document_id">
-              <td>
+        <ul class="document-list motion-stagger">
+          <li v-for="document in documents" :key="document.document_id" class="document-row">
+            <span class="row-mark" :class="`is-${document.file_type}`" aria-hidden="true">
+              <el-icon><component :is="fileTypeIcon(document.file_type)" /></el-icon>
+            </span>
+
+            <div class="document-main">
+              <div class="document-heading">
                 <strong class="document-title" :title="document.title">{{ document.title }}</strong>
-                <span class="document-id">{{ document.document_id }}</span>
-                <span v-if="document.error_message" class="document-error">{{ document.error_message }}</span>
-              </td>
-              <td>{{ document.collection_id }}</td>
-              <td>{{ fileTypeLabel(document.file_type) }}</td>
-              <td>{{ document.chunk_count }}</td>
-              <td>
                 <span :class="['status-pill', indexStatusClass(document.index_status)]">
                   {{ indexStatusLabel(document.index_status) }}
                 </span>
-              </td>
-              <td>
+              </div>
+              <!-- 内部 document_id 不再展示：它对教师没有意义 -->
+              <p class="document-meta">
+                <span>{{ document.collection_id }}</span>
+                <span class="dot" aria-hidden="true">·</span>
+                <span>{{ fileTypeLabel(document.file_type) }}</span>
+                <span class="dot" aria-hidden="true">·</span>
+                <span class="text-tabular">{{ document.chunk_count }} 个分段</span>
+              </p>
+              <p v-if="document.error_message" class="document-error">{{ document.error_message }}</p>
+            </div>
+
+            <div class="row-actions">
+              <label class="enable-toggle">
+                <span class="binding-label">启用</span>
                 <el-switch
                   :model-value="document.enabled"
                   :loading="document.updating"
                   @change="toggleDocument(document, $event)"
                 />
-              </td>
-              <td class="link-actions">
-                <el-button
-                  link
-                  type="primary"
-                  :loading="document.indexing"
-                  :disabled="!document.enabled"
-                  @click="indexDocument(document)"
-                >
-                  <el-icon><Refresh /></el-icon>
-                  {{ document.index_status === 'failed' ? '重试' : '重建' }}
+              </label>
+              <el-button
+                text
+                :loading="document.indexing"
+                :disabled="!document.enabled"
+                @click="indexDocument(document)"
+              >
+                <el-icon><Refresh /></el-icon>
+                {{ document.index_status === 'failed' ? '重试' : '重建' }}
+              </el-button>
+              <!-- 删除收进"更多"：破坏性操作不与常规操作并排 -->
+              <el-dropdown trigger="click" @command="command => handleRowCommand(command, document)">
+                <el-button text aria-label="更多操作">
+                  <el-icon><MoreFilled /></el-icon>
                 </el-button>
-                <el-button link type="danger" @click="removeDocument(document)">
-                  <el-icon><Delete /></el-icon>
-                  删除
-                </el-button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        </div>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="delete">
+                      <span class="danger-item">删除文档</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </li>
+        </ul>
       </template>
     </section>
 
@@ -188,7 +197,9 @@
           检索
         </el-button>
       </div>
-      <el-empty v-if="searched && !results.length" description="没有命中已就绪的知识片段" />
+      <p v-if="searched && !results.length" class="list-hint">
+        没有命中已就绪的知识片段——确认文档已导入并完成索引。
+      </p>
       <div v-else-if="results.length" class="result-list">
         <article v-for="(result, index) in results" :key="`${result.evidence_id || result.source}-${index}`" class="result-row">
           <div class="result-heading">
@@ -209,12 +220,19 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Delete,
+  Collection,
+  Document,
   FolderOpened,
+  Monitor,
+  MoreFilled,
+  Picture,
   Refresh,
   Search,
   Upload,
+  VideoCamera,
 } from '@element-plus/icons-vue'
+import AppPageHeader from '@/components/common/AppPageHeader.vue'
+import AppEmptyState from '@/components/common/AppEmptyState.vue'
 import {
   deleteKnowledgeDocument,
   fetchKnowledgeDocuments,
@@ -401,6 +419,25 @@ function fileTypeLabel(fileType) {
   }[fileType] || fileType
 }
 
+/** 文档类型图标：与列表里的类型色标配合，同类文件一眼可辨。 */
+const FILE_TYPE_ICONS = {
+  pdf: Document,
+  word: Document,
+  ppt: Monitor,
+  text: Picture,
+  image: Picture,
+  video: VideoCamera,
+}
+
+function fileTypeIcon(fileType) {
+  return FILE_TYPE_ICONS[fileType] || Document
+}
+
+/** 行内"更多"菜单：破坏性操作与常规操作分开。 */
+function handleRowCommand(command, document) {
+  if (command === 'delete') removeDocument(document)
+}
+
 function locatorLabel(locator = {}) {
   if (locator.page) return `第 ${locator.page} 页`
   if (locator.slide) return `第 ${locator.slide} 页`
@@ -421,28 +458,28 @@ function apiErrorMessage(error, fallback) {
 .import-form {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) minmax(160px, 0.55fr) auto;
-  gap: 14px;
+  gap: var(--space-3);
   align-items: end;
   max-width: 900px;
 }
 
 .form-field {
   display: grid;
-  gap: 7px;
+  gap: var(--space-2);
 }
 
 .form-field label,
 .field-label,
 .search-form label {
-  color: #475569;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
   font-weight: 700;
 }
 
 .enabled-field {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   min-height: 32px;
 }
 
@@ -450,25 +487,25 @@ function apiErrorMessage(error, fallback) {
 .search-form {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 18px;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }
 
 .selected-file {
   min-width: 0;
   max-width: 420px;
   overflow: hidden;
-  color: #475569;
+  color: var(--text-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .inline-alert {
-  margin-top: 14px;
+  margin-top: var(--space-3);
 }
 
 .indexing-alert {
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
 
 .visually-hidden {
@@ -476,41 +513,115 @@ function apiErrorMessage(error, fallback) {
   width: 1px;
   height: 1px;
   padding: 0;
-  margin: -1px;
+  margin: calc(var(--space-1) * -1);
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
   border: 0;
 }
 
-.knowledge-table {
-  min-width: 900px;
+/* ── 文档列表：列表行取代表格（7 列表格在窄屏只能横向滚动） ─── */
+.document-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.document-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-4) var(--space-2);
+  border-bottom: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.document-row:last-child { border-bottom: 0; }
+
+.document-row:hover { background: var(--neutral-50); }
+
+.row-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface-sunken);
+  font-size: var(--text-lg);
+}
+
+.row-mark.is-pdf { color: var(--file-pdf); }
+.row-mark.is-word { color: var(--file-word); }
+.row-mark.is-ppt { color: var(--file-ppt); }
+.row-mark.is-text { color: var(--file-image); }
+.row-mark.is-image { color: var(--file-image); }
+.row-mark.is-video { color: var(--file-video); }
+
+.document-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.document-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .document-title {
-  display: block;
-  max-width: 240px;
+  min-width: 0;
   overflow: hidden;
-  color: #0f172a;
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.document-id {
-  display: block;
-  margin-top: 4px;
-  color: #94a3b8;
-  font-size: 12px;
+.document-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
 }
 
+.dot { color: var(--neutral-400); }
+
 .document-error {
-  display: block;
-  max-width: 280px;
-  margin-top: 5px;
-  color: #b91c1c;
-  font-size: 12px;
-  line-height: 1.4;
+  color: var(--danger-600);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
 }
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  justify-content: flex-end;
+}
+
+.enable-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.binding-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.danger-item { color: var(--danger-600); }
 
 .search-form {
   max-width: 760px;
@@ -522,39 +633,71 @@ function apiErrorMessage(error, fallback) {
 
 .result-list {
   display: grid;
-  gap: 10px;
-  margin-top: 18px;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
 }
 
 .result-row {
-  padding: 14px 16px;
-  border-left: 3px solid #1463ff;
-  background: #f8fafc;
+  padding: var(--space-3) var(--space-4);
+  border-left: 3px solid var(--border-brand);
+  background: var(--bg-surface-sunken);
 }
 
 .result-heading {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
-  color: #0f172a;
+  gap: var(--space-3);
+  color: var(--text-primary);
 }
 
 .result-heading span {
-  color: #64748b;
-  font-size: 12px;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
 }
 
 .result-row p {
-  margin: 8px 0;
-  color: #475569;
+  margin: var(--space-2) 0;
+  color: var(--text-secondary);
   line-height: 1.65;
 }
 
 .result-row small {
-  color: #64748b;
+  color: var(--text-tertiary);
 }
 
-@media (max-width: 760px) {
+@media (max-width: 768px) {
+  /* 窄屏：类型标与标题同排，启用开关与操作换到下一行 */
+  .document-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-areas:
+      'mark main'
+      'mark actions';
+    gap: var(--space-2) var(--space-3);
+  }
+
+  .row-mark {
+    grid-area: mark;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    font-size: var(--text-base);
+  }
+
+  .document-main { grid-area: main; }
+
+  .row-actions {
+    grid-area: actions;
+    gap: var(--space-4);
+    justify-content: flex-start;
+  }
+
+  .row-actions :deep(.el-button) {
+    min-width: 36px;
+    height: 36px;
+  }
+
+  .document-meta { flex-wrap: wrap; }
+
   .import-form {
     grid-template-columns: 1fr;
     align-items: start;

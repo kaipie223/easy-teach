@@ -54,10 +54,14 @@ PLAN_DETAILS: dict[str, tuple[str, int]] = {
     "reused": ("复用已有教学蓝图", 64),
     "template": ("按基础模板生成蓝图", 52),
     "generate": ("AI 正在生成教学蓝图", 52),
+    # 流水线模式（agentic）的三个阶段：先把骨架搭出来，再分别填充教案与讲稿
+    "skeleton": ("AI 正在搭建课件骨架", 50),
+    "fill_teaching": ("正在写教案与成果设定", 57),
+    "fill_slides": ("正在写每页要点与讲稿", 62),
     "repair": ("AI 正在修复结构问题", 57),
-    "review": ("AI 正在审校教学事实", 61),
-    "review_repair": ("AI 正在修复审校结果", 64),
-    "persist": ("保存蓝图与成果版本", 65),
+    "review": ("AI 正在审校教学事实", 64),
+    "review_repair": ("AI 正在修复审校结果", 65),
+    "persist": ("保存蓝图与成果版本", 66),
 }
 
 
@@ -76,6 +80,13 @@ PLAN_STAGES: tuple[Stage, ...] = (
 PLAN_BRANCHES: dict[str, tuple[str, int]] = {
     "reused": ("复用已有教学蓝图", 100),
     "template": ("按基础模板生成蓝图", 45),
+    # agentic 流水线的三个必经子阶段。它们不进步骤条，但**必须**在这张表里：
+    # percent_of 对未知 key 返回 0、label_of 返回 None，于是流水线每上报一次，
+    # 进度条就被打回 0、文案停在上一句 —— 实测就是"一直在思考、进度条不动"。
+    # 措辞与百分比直接复用生成链路那张表，免得同一批阶段出现两份会漂移的副本。
+    "skeleton": PLAN_DETAILS["skeleton"],
+    "fill_teaching": PLAN_DETAILS["fill_teaching"],
+    "fill_slides": PLAN_DETAILS["fill_slides"],
     "repair": ("AI 正在修复结构问题", 62),
     "review_repair": ("AI 正在修复审校结果", 90),
 }
@@ -209,11 +220,17 @@ def frame(
     *,
     branches: dict[str, tuple[str, int]] | None = None,
     include_manifest: bool = True,
+    detail: str | None = None,
 ) -> dict[str, object]:
-    """SSE payload for a stage change: the key, its wording, its percent."""
+    """SSE payload for a stage change: the key, its wording, its percent.
+
+    ``detail`` 是阶段内的细粒度文案（例如"正在写每页要点与讲稿（4/12 页）"）。
+    最慢的阶段内部如果没有细分，进度条会长时间停在一个数字上，看起来像卡死；
+    百分比仍取该阶段的里程碑值，保证单调不倒退。
+    """
     payload: dict[str, object] = {
         "stage": key,
-        "stage_label": label_of(stages, key, branches),
+        "stage_label": detail or label_of(stages, key, branches),
         "percent": percent_of(stages, key, branches),
     }
     if include_manifest:

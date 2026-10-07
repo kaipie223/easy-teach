@@ -3,31 +3,33 @@
     <el-input
       v-model="text"
       type="textarea"
-      :rows="2"
+      :autosize="{ minRows: 2, maxRows: 6 }"
       placeholder="输入你的教学想法，或告诉 AI 你想教什么……"
       resize="none"
       :disabled="disabled"
       @keydown.enter.exact="handleEnter"
     />
+
     <div class="input-actions">
-      <el-tooltip content="语音输入" placement="top" v-if="showVoice">
+      <el-tooltip v-if="showVoice" content="语音输入" placement="top">
         <el-button
           class="btn-voice"
           circle
           :type="recording ? 'danger' : 'default'"
-          @click="$emit('toggle-voice')"
+          aria-label="语音输入"
           :disabled="disabled || recording"
+          @click="$emit('toggle-voice')"
         >
-          <el-icon :size="18"><Microphone v-if="!recording" /><Loading v-else /></el-icon>
+          <el-icon><Microphone v-if="!recording" /><Loading v-else /></el-icon>
         </el-button>
       </el-tooltip>
+
       <el-button
         type="primary"
         :disabled="!text.trim() || disabled"
         :loading="sending"
         @click="handleSend"
       >
-        <el-icon style="margin-right: 6px"><Promotion /></el-icon>
         发送
       </el-button>
     </div>
@@ -35,8 +37,8 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
-import { Microphone, Loading, Promotion } from '@element-plus/icons-vue'
+import { ref } from 'vue'
+import { Loading, Microphone } from '@element-plus/icons-vue'
 
 const props = defineProps({
   disabled: { type: Boolean, default: false },
@@ -63,32 +65,46 @@ function handleEnter(e) {
   }
 }
 
-// 暴露清空方法
-defineExpose({ clear: () => { text.value = '' } })
+// 暴露清空 / 追加方法（追加用于语音转写回填）
+defineExpose({
+  clear: () => { text.value = '' },
+  appendText: (value) => {
+    const addition = (value || '').trim()
+    if (!addition) return
+    text.value = text.value ? `${text.value}${addition}` : addition
+  },
+})
 </script>
 
 <style scoped>
 .chat-input-bar {
   display: flex;
-  gap: 10px;
   align-items: flex-end;
+  gap: var(--space-3);
 }
 
 .chat-input-bar :deep(.el-textarea__inner) {
-  border-radius: 8px;
-  font-size: 14px;
-  line-height: 1.6;
+  border-radius: var(--radius-lg);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+  padding: var(--space-3) var(--space-4);
 }
 
 .input-actions {
   display: flex;
-  gap: 8px;
   align-items: center;
+  gap: var(--space-2);
   flex: 0 0 auto;
 }
 
 .btn-voice {
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
+}
+
+@media (max-width: 480px) {
+  .chat-input-bar { gap: var(--space-2); }
+
+  .btn-voice { display: none; }
 }
 </style>

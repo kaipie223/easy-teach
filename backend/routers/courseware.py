@@ -1,6 +1,8 @@
 """M4 courseware-plan and project generation APIs."""
 
+import asyncio
 import logging
+import threading
 from typing import Any, AsyncIterator, Callable
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -41,7 +43,8 @@ from backend.services.sse import (
     error_frame,
     wants_event_stream,
 )
-from backend.services.progress import PLAN_BRANCHES, PLAN_STAGES, frame
+from backend.services.plan_jobs import acquire_plan_job, release_plan_job
+from backend.services.progress import PLAN_BRANCHES, PLAN_STAGES, frame, label_of
 from backend.services.task_queue import enqueue_generation, task_info_values
 from backend.services.versions import ensure_initial_version
 
@@ -115,12 +118,16 @@ def _build_plan_payload(
 
     force_rebuild = request.force_rebuild if request else False
     generation_mode = request.generation_mode if request else "ai"
+    deep_thinking = request.deep_thinking if request else None
     current = get_latest_plan(db, project.project_id)
     if (
         current is not None
         and current.brief_id == brief.brief_id
         and current.generation_mode == generation_mode
         and not force_rebuild
+        # 与 build_courseware_plan 保持同一条规则：勾了深度思考就必须真的重算，
+        # 否则这里先把缓存返回了，开关看起来完全没作用。
+        and not deep_thinking
     ):
         return to_info(current)
 
@@ -146,6 +153,7 @@ def _build_plan_payload(
         force_rebuild=force_rebuild,
         generation_mode=generation_mode,
         allow_template_fallback=request.allow_template_fallback if request else False,
+        deep_thinking=deep_thinking,
         on_stage=on_stage,
     )
     ensure_initial_version(db, project, plan, user_id=user.user_id)
@@ -154,39 +162,98 @@ def _build_plan_payload(
     return to_info(plan)
 
 
+def _progress_emitter(job) -> Callable[..., None]:
+    """把流水线的阶段回调接到作业的进度帧上（含阶段内细分文案）。"""
+
+    def on_stage(stage: str, detail: str | None = None) -> None:
+        # 未知阶段会被 percent_of 静默当成 0：进度条不是停住，而是**被打回起点**，
+        # 比不动更难解释。这类失误要等流水线跑几分钟才看得见，所以在这里立刻喊一声。
+        if label_of(PLAN_STAGES, stage, PLAN_BRANCHES) is None:
+            logger.warning(
+                "蓝图进度：阶段 %r 不在进度表里，进度会退回 0（请补进 PLAN_BRANCHES）", stage
+            )
+        job.emit("progress", frame(PLAN_STAGES, stage, branches=PLAN_BRANCHES, detail=detail))
+
+    return on_stage
+
+
+def _start_plan_build(
+    db: DBSession,
+    project_id: str,
+    user: User,
+    request: CoursewarePlanBuildRequest | None,
+    job,
+) -> None:
+    """owner 在自己的线程里跑生成，结果与异常都投给作业。"""
+
+    def run() -> None:
+        try:
+            payload = _build_plan_payload(
+                db, project_id, user, request, on_stage=_progress_emitter(job)
+            )
+            job.emit("result", payload.model_dump(mode="json"))
+        except BaseException as exc:  # noqa: BLE001 - 转交订阅方处理
+            logger.warning("蓝图生成失败（作业 %s）：%s", project_id, exc)
+            job.fail(exc)
+        finally:
+            job.close()
+            release_plan_job(project_id, job)
+
+    threading.Thread(target=run, name=f"plan-build-{project_id}", daemon=True).start()
+
+
+def _join_running_build(project_id: str, job) -> CoursewarePlanInfo:
+    """已经有同一项目的生成在跑：等它出结果，不再另起一条。"""
+    payload = job.wait_for_result()
+    if job.error is not None:
+        raise job.error
+    if payload is None:
+        raise ApiError("教学蓝图生成未完成，请重试", code="PLAN_BUILD_INCOMPLETE")
+    return CoursewarePlanInfo.model_validate(payload)
+
+
 async def _plan_event_stream(
     db: DBSession,
     project_id: str,
     user: User,
     request: CoursewarePlanBuildRequest | None,
 ) -> AsyncIterator[str]:
-    """Emit progress frames while the blueprint builds, then the finished plan."""
+    """Emit progress frames while the blueprint builds, then the finished plan.
 
-    def run(emit: Callable[[str, Any], None]) -> None:
-        def on_stage(stage: str) -> None:
-            emit("progress", frame(PLAN_STAGES, stage, branches=PLAN_BRANCHES))
-
-        payload = _build_plan_payload(db, project_id, user, request, on_stage=on_stage)
-        emit("result", payload.model_dump(mode="json"))
-
+    生成期间重复进入页面（刷新、返回再进）会再次 POST 到这里 —— 那不该变成
+    第二条流水线，而是订阅已经在跑的那一条。
+    """
+    job, is_owner = acquire_plan_job(project_id)
+    channel = job.subscribe()
+    if is_owner:
+        _start_plan_build(db, project_id, user, request, job)
     try:
-        async for kind, payload in aiter_threaded_producer(run):
+        while True:
+            item = await asyncio.to_thread(channel.get)
+            if item is None:
+                return
+            kind, payload = item
+            if kind == "error":
+                exc = job.error
+                if isinstance(exc, ApiError):
+                    logger.warning("Streamed blueprint build failed: %s", exc.code)
+                    yield error_frame(
+                        exc.message,
+                        code=exc.code,
+                        recoverable=exc.recoverable,
+                        suggested_action=exc.suggested_action,
+                    )
+                else:
+                    logger.warning("Streamed blueprint build crashed: %s", exc)
+                    yield error_frame(
+                        "生成教学蓝图时出错，请重试",
+                        code="PLAN_BUILD_FAILED",
+                        recoverable=True,
+                    )
+                continue
             yield encode_sse(kind, payload)
-    except ApiError as exc:
-        logger.warning("Streamed blueprint build failed: %s", exc.code)
-        yield error_frame(
-            exc.message,
-            code=exc.code,
-            recoverable=exc.recoverable,
-            suggested_action=exc.suggested_action,
-        )
-    except Exception:
-        logger.exception("Streamed blueprint build crashed")
-        yield error_frame(
-            "生成教学蓝图时出错，请重试",
-            code="PLAN_STREAM_FAILED",
-            suggested_action="请稍后重试；若持续失败，请联系管理员",
-        )
+    finally:
+        job.unsubscribe(channel)
 
 
 @router.post("/{project_id}/plan", response_model=CoursewarePlanInfo, status_code=201)
@@ -204,7 +271,22 @@ def create_plan(
     observable. Every other client keeps the plain JSON response unchanged.
     """
     if not wants_event_stream(http_request.headers.get("accept")):
-        return _build_plan_payload(db, project_id, user, request)
+        # 非流式客户端同样不能另起一条流水线：已在跑就等它的结果
+        job, is_owner = acquire_plan_job(project_id)
+        if not is_owner:
+            return _join_running_build(project_id, job)
+        try:
+            payload = _build_plan_payload(
+                db, project_id, user, request, on_stage=_progress_emitter(job)
+            )
+            job.emit("result", payload.model_dump(mode="json"))
+            return payload
+        except BaseException as exc:  # noqa: BLE001 - 先广播给订阅方，再原样抛出
+            job.fail(exc)
+            raise
+        finally:
+            job.close()
+            release_plan_job(project_id, job)
 
     return StreamingResponse(
         _plan_event_stream(db, project_id, user, request),

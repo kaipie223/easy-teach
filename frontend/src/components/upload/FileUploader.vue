@@ -16,7 +16,7 @@
         hidden
         @change="handleFileSelect"
       />
-      <el-icon :size="32" color="#94a3b8"><UploadFilled /></el-icon>
+      <el-icon :size="32" color="var(--text-disabled)"><UploadFilled /></el-icon>
       <div class="upload-hint">
         <strong>拖拽文件到此处</strong>，或
         <el-button type="primary" link @click="$refs.fileInput.click()">选择文件</el-button>
@@ -209,8 +209,8 @@ function removeFile(idx) {
 
 function getFileColor(name) {
   const ext = name.split('.').pop()?.toLowerCase()
-  const colorMap = { pdf: '#ef4444', docx: '#3b82f6', pptx: '#f97316', txt: '#6b7280', png: '#22c55e', jpg: '#22c55e', jpeg: '#22c55e' }
-  return colorMap[ext] || '#6b7280'
+  const colorMap = { pdf: 'var(--danger-500)', docx: 'var(--file-word)', pptx: 'var(--file-ppt)', txt: 'var(--text-tertiary)', png: 'var(--success-500)', jpg: 'var(--success-500)', jpeg: 'var(--success-500)' }
+  return colorMap[ext] || 'var(--text-tertiary)'
 }
 
 function formatSize(bytes) {
@@ -227,86 +227,86 @@ defineExpose({ files, refDescription })
 .file-uploader {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--space-3);
 }
 
 .upload-zone {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 16px;
+  gap: var(--space-4);
   min-height: 100px;
-  border: 2px dashed #cbd5e1;
+  border: 2px dashed var(--border-strong);
   border-radius: 10px;
-  background: #f8fafc;
+  background: var(--bg-surface-sunken);
   cursor: pointer;
   transition: border-color 0.2s, background 0.2s;
 }
 
 .upload-zone:hover,
 .upload-zone.is-dragover {
-  border-color: #1463ff;
-  background: #eff6ff;
+  border-color: var(--border-brand);
+  background: var(--brand-50);
 }
 
 .upload-hint {
-  color: #475569;
-  font-size: 14px;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
   line-height: 1.6;
 }
 
 .upload-formats {
-  color: #94a3b8;
-  font-size: 13px;
+  color: var(--text-disabled);
+  font-size: var(--text-sm);
 }
 
 .upload-note :deep(.el-textarea__inner) {
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .file-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .file-item {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 16px;
-  border: 1px solid #e4e9f2;
-  border-radius: 8px;
-  background: #ffffff;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
 }
 
 .file-info {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .file-detail {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .file-name {
-  font-size: 14px;
+  font-size: var(--text-base);
   font-weight: 600;
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .file-size {
-  font-size: 12px;
-  color: #9ca3af;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 .file-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 4px;
+  gap: var(--space-1);
 }
 </style>

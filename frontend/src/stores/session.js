@@ -63,6 +63,26 @@ export const useSessionStore = defineStore('session', () => {
     addMessage({ role: 'assistant', type, data, content: '' })
   }
 
+  /**
+   * 追问的候选答案已经渲染成按钮，正文里那几句就不再显示一遍。
+   * 只动最后一条气泡；万一改空了（或没匹配上）就保留原文。
+   */
+  function stripLastMessageChoices(options) {
+    const last = messages.value[messages.value.length - 1]
+    if (!last?.content || !options?.length) return
+    const original = last.content
+    let text = original
+    for (const option of options) {
+      const escaped = String(option).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      // 模型把候选写进正文时可能带 ①… 序号，也可能用 A. / B、 这类字母编号
+      text = text.replace(
+        new RegExp(`(?:[①②③④⑤⑥]|[A-Da-d][.、)）:：])\\s*${escaped}\\s*[。；;]?`, 'g'),
+        '',
+      )
+    }
+    last.content = text.replace(/\s{2,}/g, ' ').trim() || original
+  }
+
   /** 清空消息列表 */
   function clearMessages() {
     messages.value = []
@@ -187,6 +207,7 @@ export const useSessionStore = defineStore('session', () => {
     addMessage,
     appendToLastMessage,
     addStructuredMessage,
+    stripLastMessageChoices,
     applyBriefEvent,
     clearMessages,
     createSession,

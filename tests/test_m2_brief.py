@@ -17,6 +17,9 @@ def register(client, email: str):
 
 def complete_brief_payload(**overrides):
     payload = {
+        # 学科与学段是必确认的核心字段（决定学科规则注入与学段适配）
+        "subject": "信息技术",
+        "grade": "大一",
         "teaching_goal": "帮助学生理解 TCP 三次握手并能解释每次报文的作用",
         "target_audience": "大一新生",
         "duration_minutes": 45,
@@ -145,7 +148,7 @@ def test_teaching_brief_validation_confirmation_and_versioning(client, stub_inte
     changed = client.patch(
         f"/api/v1/projects/{project_id}/brief",
         headers=headers,
-        json={"teaching_goal": "学生能够比较 TCP 与 UDP 的连接特点"},
+        json={"teaching_goal": "学生能够比较 TCP 与 UDP 的连接特点", "duration_minutes": 45},
     )
     assert changed.status_code == 200, changed.text
     second_version = changed.json()
@@ -199,8 +202,11 @@ def test_ai_populates_full_brief_and_preserves_teacher_fields(client, monkeypatc
     )
     project_id = project.json()["project_id"]
 
-    def analyze(_self, _session_id, _messages):
+    def analyze(_self, _session_id, _messages, _context_block=""):
         return IntentResult(
+            # 学科与学段是必确认的核心字段：模型分析结果里没有它们，需求单就不完整
+            subject="物理",
+            grade="初二",
             teaching_goal="理解浮力并解释生活中的浮力现象",
             target_audience="初二学生",
             duration_minutes=45,
@@ -221,7 +227,7 @@ def test_ai_populates_full_brief_and_preserves_teacher_fields(client, monkeypatc
             confirm_summary="已形成浮力课程需求。",
         )
 
-    def analyze_stream(_self, _session_id, _messages):
+    def analyze_stream(_self, _session_id, _messages, _context_block=""):
         # The chat SSE layer consumes the streaming adapter; reuse the canned result.
         yield ("result", (analyze(None, None, _messages), None))
 
@@ -233,7 +239,10 @@ def test_ai_populates_full_brief_and_preserves_teacher_fields(client, monkeypatc
         json={"message": "设计一节浮力课"},
     )
     assert first.status_code == 200
-    assert "event: confirm" in first.text
+    # 模型把字段都填了，但目标/重点/产出都还只是它的提议（source=ai）：必须先请
+    # 教师确认过 —— 这一轮给的是追问卡片，不是确认面板
+    assert "event: question" in first.text
+    assert "event: confirm" not in first.text
 
     brief = client.get(f"/api/v1/projects/{project_id}/brief", headers=headers).json()
     assert brief["teaching_focus"] == "影响浮力大小的因素"
@@ -345,5 +354,6 @@ def test_intent_probing_policy_matches_request_complexity():
             }
         ]
     )
-    assert "最多追问 2 项" in complex_policy
+    # 追问始终一次只问一项：后端按需求单状态逐项推进，正文多问会自相矛盾
+    assert "一次只问一项" in complex_policy
     assert "课堂设备" in complex_policy

@@ -258,6 +258,9 @@ class SessionInfo(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    # "这项先跳过"：要跳过的字段名（前端从追问卡片上带下来）。必须结构化传递 ——
+    # 只发"跳过"两个字的话，它会被当成一次回答写进需求单（"跳过"变成教学目标）。
+    skip_field: str | None = Field(default=None, max_length=64)
 
 
 class ChatEvent(BaseModel):
@@ -490,6 +493,10 @@ class TeachingBriefInfo(BaseModel):
     interaction_ideas: str = ""
     style_preference: str = ""
     missing_info: list[str] = Field(default_factory=list)
+    # 待确认的核心字段（字段名，按必问顺序）与核心字段总数：界面靠这两个值显示
+    # "已确认 x/y" 的进度，而不是自己猜哪一项算已确认（课时有默认值，猜不准）。
+    pending_fields: list[str] = Field(default_factory=list)
+    core_total: int = 0
     is_complete: bool = False
     source_refs: dict[str, Any] = Field(default_factory=dict)
     confidence: dict[str, float] = Field(default_factory=dict)
@@ -529,6 +536,8 @@ class IntentResult(BaseModel):
     extra_requirements: str = ""
     missing_info: list[str] = Field(default_factory=list)
     follow_up_question: str | None = None
+    # 追问的可选答案：前端渲染成按钮，教师点一下即可回答（与追问一一对应）
+    options: list[str] = Field(default_factory=list)
     confirm_summary: str | None = None
     is_complete: bool = False
 
@@ -727,10 +736,144 @@ class InteractionSpec(BaseModel):
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
 
 
+# ── 互动教具：学生动手探究的仿真，而不是又一道选择题 ──────────────
+#
+# 互动网页以前只能渲染 interactions（题目 + 答案分组），所以无论怎么改提示词，产出
+# 都是一张做题页。教具把"可动手探究的模型"独立出来：模型只写参数与公式，画布、
+# 控件、读数、引导步骤都由后端渲染，公式走 expressions.py 的白名单求值。
+# 这样既能做"调节管径看流速与压强"这类仿真，又不接受模型写的任何可执行代码。
+
+# 有专门绘制实现的引擎。白名单之外的引擎在归一化时降级为 curve，不让整册失败。
+TOOL_ENGINES: tuple[str, ...] = (
+    "flow",
+    "curve",
+    "field",
+    "particles",
+    "balance",
+    "circuit",
+    "scene",
+)
+# 已经实现画布的引擎。quality 用它判断"这个引擎是真的画出来了，还是被降级渲染"。
+# 七个引擎全部实现；将来新增引擎时只改这一处与 generator 的绘制表。
+RENDERED_TOOL_ENGINES: tuple[str, ...] = (
+    "flow",
+    "curve",
+    "field",
+    "particles",
+    "balance",
+    "circuit",
+    "scene",
+)
+
+# scene 引擎：模型按图元目录自由搭建的动态场景（轨道、振动、波、运动学……），
+# 让"任意教学目标 → 可动手探究的动画"不再受固定引擎限制。几何属性写成受限
+# 表达式（可含场景时钟 t、path 采样参数 s），服务端逐个编译成具名 JS 函数；
+# 颜色只许用调色板 token，数值样式属性由归一化静默钳制。
+SCENE_ENTITY_KINDS: tuple[str, ...] = (
+    "circle",
+    "rect",
+    "line",
+    "arrow",
+    "path",
+    "text",
+    "readout",
+)
+# 每种图元的几何属性：值必须是表达式字符串，运行时编译进 TOOL_COMPUTE。
+SCENE_KIND_EXPRESSION_PROPS: dict[str, tuple[str, ...]] = {
+    "circle": ("cx", "cy", "r"),
+    "rect": ("x", "y", "w", "h"),
+    "line": ("x1", "y1", "x2", "y2"),
+    "arrow": ("x1", "y1", "x2", "y2"),
+    "path": ("x", "y"),
+    "text": ("x", "y"),
+    "readout": ("x", "y"),
+}
+# 缺失即无法绘制的属性：几何表达式属性全部必填，text/readout 另加内容键。
+SCENE_KIND_REQUIRED_PROPS: dict[str, tuple[str, ...]] = {
+    "circle": ("cx", "cy", "r"),
+    "rect": ("x", "y", "w", "h"),
+    "line": ("x1", "y1", "x2", "y2"),
+    "arrow": ("x1", "y1", "x2", "y2"),
+    "path": ("x", "y"),
+    "text": ("x", "y", "content"),
+    "readout": ("x", "y", "output"),
+}
+SCENE_PALETTE: dict[str, str] = {
+    "primary": "#1463ff",
+    "accent": "#f0700a",
+    "steel": "#8fb4e8",
+    "grid": "#cad5e5",
+    "pale": "#e8f1ff",
+    "muted": "#6b778c",
+    "ink": "#0b1120",
+    "white": "#ffffff",
+    "slate": "#33415c",
+    "label": "#47546b",
+}
+SCENE_MAX_ENTITIES = 24
+SCENE_MAX_PATH_SAMPLES = 240
+SCENE_TEXT_MAX_LENGTH = 80
+# 场景时钟与采样参数占用的名字：教具的参数/常量/读数不得与之冲突。
+SCENE_RESERVED_NAMES: tuple[str, ...] = ("t", "s")
+
+
+class ToolVariable(BaseModel):
+    """教具的一个可调参数。"""
+
+    key: str
+    label: str
+    unit: str = ""
+    min: float
+    max: float
+    default: float
+    step: float = 1.0
+    role: str = ""
+
+
+class ToolOutput(BaseModel):
+    """教具的一个读数/曲线，由受限表达式算出。"""
+
+    key: str
+    label: str
+    unit: str = ""
+    expression: str
+    hint: str = ""
+
+
+class InteractiveToolSpec(BaseModel):
+    """一个可动手探究的教学教具。"""
+
+    tool_id: str
+    order: int
+    title: str
+    goal: str
+    engine: str = "curve"
+    model_note: str = ""
+    variables: list[ToolVariable] = Field(default_factory=list)
+    outputs: list[ToolOutput] = Field(default_factory=list)
+    constants: dict[str, float] = Field(default_factory=dict)
+    scene: dict[str, Any] = Field(default_factory=dict)
+    predict_prompts: list[str] = Field(default_factory=list)
+    guided_steps: list[str] = Field(default_factory=list)
+    check_questions: list[str] = Field(default_factory=list)
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list)
+
+
+# 每页要点条数只保留"合理性兜底"，不再充当生成上限。
+#
+# 以前这里是 ge=2 / le=8：模型写到第 9 条就会被整册校验判失败，再回落到通用占位
+# 文本，结果比"写得密"更糟。现在生成端不设上限，页面密度由渲染器承接——超出一页
+# 容量的条目会拆成续页而不是被截断——所以 schema 只需要挡住明显荒谬的数值。
+MAX_BULLETS_PER_SLIDE_LIMIT = 64
+# 页数同理：下限是有意义的（一份课件至少要有内容），上限只作兜底。
+MIN_SLIDES_PER_DECK = 1
+MAX_SLIDES_PER_DECK = 64
+
+
 class PptxContentSpec(BaseModel):
     narrative_arc: list[str] = Field(default_factory=list)
     visual_direction: str = "清晰、克制、便于课堂投影"
-    max_bullets_per_slide: int = Field(default=5, ge=2, le=8)
+    max_bullets_per_slide: int = Field(default=5, ge=1, le=MAX_BULLETS_PER_SLIDE_LIMIT)
     speaker_notes_required: bool = True
 
 
@@ -748,6 +891,8 @@ class PdfContentSpec(BaseModel):
 
 
 class HtmlContentSpec(BaseModel):
+    # 教具在前、检测题在后：互动网页的主体是"动手探究"，题目用来收口
+    tool_ids: list[str] = Field(default_factory=list)
     interaction_ids: list[str] = Field(default_factory=list)
     completion_message: str = "练习完成，请结合解析回顾本课要点。"
     allow_retry: bool = True
@@ -774,6 +919,8 @@ class CoursewarePlanSpec(BaseModel):
     slides: list[SlideSpec] = Field(default_factory=list)
     lesson_sections: list[LessonPlanSectionSpec] = Field(default_factory=list)
     interactions: list[InteractionSpec] = Field(default_factory=list)
+    # 默认空：老蓝图（没有教具字段）照旧通过校验，产物形态不变
+    interactive_tools: list[InteractiveToolSpec] = Field(default_factory=list)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     output_specs: OutputContentSpecs = Field(default_factory=OutputContentSpecs)
     generation_notes: list[str] = Field(default_factory=list)
@@ -783,6 +930,11 @@ class CoursewarePlanBuildRequest(BaseModel):
     force_rebuild: bool = False
     generation_mode: Literal["ai", "template"] = "ai"
     allow_template_fallback: bool = False
+    # 是否开启"深度思考"。三态而不是布尔：
+    #   None  -> 按服务端配置（老客户端不发这个字段，行为完全不变）
+    #   True  -> 明确要求深度思考，值得多花时间
+    #   False -> 明确要求快速生成
+    deep_thinking: bool | None = None
 
 
 class CoursewarePlanRevisionRequest(BaseModel):

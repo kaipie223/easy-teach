@@ -1,32 +1,36 @@
 <template>
-  <div class="page-stack">
-    <div class="page-header">
-      <div>
-        <h1>新建项目</h1>
-        <p>输入课程名称，TeachMate AI 将引导你完成教学设计</p>
-      </div>
-    </div>
+  <div class="home-page">
+    <!-- Stripe 式动态极光：色彩集中在右上，文字一侧由白纱罩住 -->
+    <AuroraBackdrop class="home-backdrop" />
 
-    <div class="home-hero">
-      <div class="hero-card">
-        <div class="hero-icon">
-          <el-icon :size="40" color="#1463ff"><EditPen /></el-icon>
-        </div>
-        <h2>创建教学课程</h2>
-        <p class="hero-desc">
-          告诉我你想教什么，我会帮你：
-          <br />• 梳理教学需求
-          <br />• 上传参考资料
-          <br />• 生成课件和教案
-        </p>
+    <div class="home-content">
+      <AppPageHeader
+        title="新建教案"
+        subtitle="只要一句课程名称，剩下的我们一起捋。"
+      />
 
-        <div class="hero-form">
+      <section class="section-card create-card">
+        <span class="card-mark" aria-hidden="true">
+          <el-icon><EditPen /></el-icon>
+        </span>
+
+        <h2>这节课你要讲什么？</h2>
+        <p class="card-subtitle">写下课题，我会先陪你确认学段、课时与重难点。</p>
+
+        <ul class="step-list">
+          <li v-for="item in steps" :key="item">
+            <el-icon class="step-icon"><Select /></el-icon>
+            <span>{{ item }}</span>
+          </li>
+        </ul>
+
+        <form class="create-form" @submit.prevent="handleCreate">
           <el-input
             v-model="courseName"
             size="large"
-            placeholder="输入课程名称，例如：Python入门、初中物理力学……"
+            placeholder="例如：Python 入门、初中物理力学、显性遗传……"
             :disabled="loading"
-            @keydown.enter="handleCreate"
+            aria-label="课程名称"
           >
             <template #prefix>
               <el-icon><Reading /></el-icon>
@@ -35,19 +39,25 @@
           <el-button
             type="primary"
             size="large"
+            native-type="submit"
             :loading="loading"
             :disabled="!courseName.trim()"
-            @click="handleCreate"
           >
             开始创建
           </el-button>
-        </div>
+        </form>
 
-        <div v-if="errorMsg" class="hero-error">
-          <el-alert :title="errorMsg" type="error" show-icon :closable="false" />
-        </div>
-      </div>
+        <p class="form-hint">按 Enter 也可以直接开始。</p>
 
+        <el-alert
+          v-if="errorMsg"
+          class="create-error"
+          :title="errorMsg"
+          type="error"
+          show-icon
+          :closable="false"
+        />
+      </section>
     </div>
   </div>
 </template>
@@ -55,10 +65,12 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { EditPen, Reading } from '@element-plus/icons-vue'
+import { EditPen, Reading, Select } from '@element-plus/icons-vue'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
 import { createProject } from '@/api'
+import AppPageHeader from '@/components/common/AppPageHeader.vue'
+import AuroraBackdrop from '@/components/common/AuroraBackdrop.vue'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
@@ -67,8 +79,9 @@ const projectStore = useProjectStore()
 const courseName = ref('')
 const loading = ref(false)
 const errorMsg = ref('')
-
 const createdProject = ref(null)
+
+const steps = ['确认学段、课时与重难点', '按需上传参考资料', '生成课件、教案与互动练习']
 
 async function handleCreate() {
   const name = courseName.value.trim()
@@ -87,61 +100,114 @@ async function handleCreate() {
     projectStore.setActiveSession(res.session_id)
     router.push(`/chat/${res.session_id}`)
   } catch (err) {
-    errorMsg.value = err.response?.data?.error?.message || err.message || '创建会话失败，请重试'
+    errorMsg.value = err.response?.data?.error?.message || err.message || '创建失败，请重试'
   } finally {
     loading.value = false
   }
 }
-
 </script>
 
 <style scoped>
-.home-hero {
-  display: grid;
-  gap: 24px;
+.home-page {
+  position: relative;
+  min-height: 100%;
 }
 
-.hero-card {
-  max-width: 600px;
+/* 全屏铺满视口：fixed 保证内容再短也不会在下方露白。
+   层级保持 auto：顶栏已自带 z-index，内容在后自然盖住背景。 */
+.home-backdrop {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.home-content {
+  position: relative;
+  max-width: 620px;
   margin: 0 auto;
-  width: 100%;
-  text-align: center;
-  padding: 40px 32px;
-  border: 1px solid #e4e9f2;
-  border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
-}
-
-.hero-icon {
-  margin-bottom: 16px;
-}
-
-.hero-card h2 {
-  margin: 0 0 8px;
-  font-size: 22px;
-  color: #0f172a;
-}
-
-.hero-desc {
-  color: #64748b;
-  font-size: 14px;
-  line-height: 1.8;
-  margin: 0 0 28px;
-}
-
-.hero-form {
   display: flex;
-  gap: 10px;
+  flex-direction: column;
+  gap: var(--space-6);
 }
 
-.hero-form :deep(.el-input) {
-  flex: 1;
+.create-card {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-8);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-overlay);
 }
 
-.hero-error {
-  margin-top: 16px;
-  text-align: left;
+.card-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  margin-bottom: var(--space-4);
+  border-radius: var(--radius-lg);
+  background: var(--brand-50);
+  color: var(--text-brand);
+  font-size: var(--text-lg);
 }
 
+.create-card h2 {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.card-subtitle {
+  margin-top: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.step-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-5) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.step-icon {
+  color: var(--text-brand);
+  font-size: var(--text-base);
+}
+
+.create-form {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+.create-form :deep(.el-input) { flex: 1; }
+
+.form-hint {
+  margin-top: var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.create-error { margin-top: var(--space-4); }
+
+@media (max-width: 768px) {
+  .create-card { padding: var(--space-6) var(--space-5); }
+
+  .create-form {
+    flex-direction: column;
+  }
+
+  .create-form :deep(.el-button) { width: 100%; }
+}
 </style>

@@ -53,6 +53,20 @@ class Settings(BaseSettings):
     # never described, and the analysis says so instead of pretending it was read.
     deepseek_vision_model: str = ""
 
+    # 文本 AI 的输出预算：质量优先，默认给足。
+    #
+    # 以前这两项写死在 _completion 里（max_tokens=8000 / timeout=90），整册内容
+    # （slides + 教案 + 互动 + 四类成果设定）共用一份 8000 预算，模型只能把每条都
+    # 写短——这是"内容单薄"的直接来源。放到配置里既是解除上限，也便于按部署环境
+    # 调整，不必再改代码。
+    #
+    # 调大不会把生成打死：_completion 在服务端明确拒绝超大预算时会自动降级重试。
+    deepseek_max_output_tokens: int = 32000
+    deepseek_request_timeout_seconds: int = 300
+    # 思考模式能明显提升内容的推理深度（代价是更慢）。默认开启；供应商不支持时
+    # _completion 会自动回退到关闭状态，因此不需要为兼容性把它关掉。
+    deepseek_thinking_enabled: bool = True
+
     # 图像生成（火山方舟 ARK · Seedream），用于成果编辑里的"AI 生成配图"。
     # 与视觉能力一样是可选能力：未配置 key 时接口返回明确的 IMAGE_GEN_NOT_CONFIGURED，
     # 而不是静默失败或假装生成过。
@@ -62,6 +76,13 @@ class Settings(BaseSettings):
     ark_image_model: str = "doubao-seedream-4-0-250828"
     ark_image_size: str = "1024x1024"
     ark_image_timeout_seconds: int = 180
+
+    # 课件蓝图的生成方式：
+    #   agentic（默认）—— 骨架 → 填充教案与成果设定 → 填充讲稿 → 审校。分段生成，
+    #     每段都有完整的输出预算，内容写得开；一次调用塞下整册会让每条都被写短，
+    #     教案四项和 PDF 学习要点尤其明显。
+    #   classic —— 一次调用产出整份蓝图（调用更少、更快，但内容更容易被压缩）。
+    courseware_pipeline: str = "agentic"
 
     # 生成课件时"每页自动配图"：在渲染产物之前给缺图页各生成一张插图，图片随这一版
     # 一起落库，所以不会每配一张图就多一个成果版本。未配置 ARK key 时自动跳过，

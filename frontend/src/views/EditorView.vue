@@ -91,24 +91,34 @@
         <div class="section-header">
           <div>
             <h2>成果预览</h2>
-            <p>预览的是与导出 pptx 同源的内容。点击标题、要点或讲稿即可选中一处，再单独对它提修改意见。</p>
+            <p>预览与导出的 pptx 同源。点画布上的标题、要点或讲稿选中一处，右侧面板即可单独改写它。</p>
           </div>
-          <el-select
-            v-model="previewVersionId"
-            class="preview-version"
-            placeholder="选择版本"
-            @change="onPreviewVersionChange"
-          >
-            <el-option
-              v-for="version in versions"
-              :key="version.artifact_version_id"
-              :label="`v${version.version} · ${generationModeLabel(version.generation_mode)}`"
-              :value="version.artifact_version_id"
+          <div class="preview-tools">
+            <el-select
+              v-model="previewVersionId"
+              class="preview-version"
+              placeholder="选择版本"
+              @change="onPreviewVersionChange"
             >
-              <span>v{{ version.version }} · {{ generationModeLabel(version.generation_mode) }}</span>
-              <span class="option-hint">{{ formatDate(version.created_at) }}</span>
-            </el-option>
-          </el-select>
+              <el-option
+                v-for="version in versions"
+                :key="version.artifact_version_id"
+                :label="`v${version.version} · ${generationModeLabel(version.generation_mode)}`"
+                :value="version.artifact_version_id"
+              >
+                <span>v{{ version.version }} · {{ generationModeLabel(version.generation_mode) }}</span>
+                <span class="option-hint">{{ formatDate(version.created_at) }}</span>
+              </el-option>
+            </el-select>
+            <el-button :disabled="!canAnnotate" @click="openPanel('revision')">
+              <el-icon><MagicStick /></el-icon>
+              提出修改
+            </el-button>
+            <el-button :disabled="!canAnnotate" @click="openPanel('image')">
+              <el-icon><Picture /></el-icon>
+              配图
+            </el-button>
+          </div>
         </div>
 
         <el-alert
@@ -147,113 +157,146 @@
           </div>
         </div>
 
-        <div class="preview-image">
-          <!-- AI 生成配图：不必先去资料页上传图片，直接描述想要的画面即可 -->
-          <el-input
-            v-model="aiImagePrompt"
-            maxlength="600"
-            show-word-limit
-            placeholder="描述想要的配图，例如：切开的西瓜放在木桌上，扁平化教学插画，无文字"
-            :disabled="!canAnnotate || generatingImage"
-            @keydown.enter.exact.prevent="generateSlideImageByAI"
-          >
-            <template #append>
-              <el-button
-                :loading="generatingImage"
-                :disabled="!canGenerateImage"
-                @click="generateSlideImageByAI"
-              >
-                <el-icon v-if="!generatingImage"><MagicStick /></el-icon>
-                AI 生成配图
-              </el-button>
-            </template>
-          </el-input>
-
-          <div class="preview-image-row">
-            <div class="preview-image-pick">
-              <el-select
-                v-model="imageMaterialId"
-                placeholder="选择一张图片资料"
-                filterable
-                clearable
-                :disabled="!canAnnotate || savingImage"
-              >
-                <el-option
-                  v-for="item in imageMaterials"
-                  :key="item.material_id"
-                  :label="item.original_name"
-                  :value="item.material_id"
-                />
-              </el-select>
-              <img v-if="selectedImageUrl" class="preview-image-thumb" :src="selectedImageUrl" alt="" />
-            </div>
-            <el-segmented
-              v-model="imagePlacement"
-              :options="PLACEMENT_OPTIONS"
-              :disabled="!canAnnotate || savingImage || !imageMaterialId"
-              @change="changeSlidePlacement"
-            />
-          </div>
-          <el-input
-            v-model="imageCaption"
-            maxlength="200"
-            show-word-limit
-            placeholder="图注（可选，显示在图片下方；背景图模式下并入讲稿）"
-            :disabled="!canAnnotate || savingImage || !imageMaterialId"
-          />
-          <p v-if="imageDirty" class="preview-image-hint">
-            素材或图注有改动，点下面的按钮生效；位置切换会立即生效。
-          </p>
-          <div class="revision-actions">
-            <el-button type="primary" :loading="savingImage" :disabled="!canApplyImage" @click="applySlideImage">
-              <el-icon><Picture /></el-icon>
-              应用配图并创建版本
-            </el-button>
-            <el-button v-if="previewSlide?.image" :disabled="savingImage" @click="removeSlideImage">
-              移除配图
-            </el-button>
-            <!-- 一键补齐其余缺图页：整批只产生一个新版本 -->
-            <el-button :loading="illustrating" :disabled="!canIllustrate" @click="illustrateMissingSlides">
-              <el-icon><MagicStick /></el-icon>
-              为缺图页自动配图{{ missingImageCount ? `（${missingImageCount} 页）` : '' }}
-            </el-button>
-          </div>
-          <p v-if="!imageMaterials.length" class="preview-image-hint">
-            本项目还没有图片资料：可以直接在上面用 AI 生成配图，或到「资料」页上传一张图片。
-          </p>
-        </div>
-
-        <div class="preview-instruction">
-          <label class="field-label" for="slide-anchor-instruction">
-            对「{{ anchorDescription }}」提意见
-          </label>
-          <el-input
-            id="slide-anchor-instruction"
-            v-model="aiInstruction"
-            type="textarea"
-            :rows="2"
-            maxlength="2000"
-            show-word-limit
-            placeholder="例如：这条要点太长了，改成学生一眼能看懂的短句"
-            :disabled="!canAnnotate || regenerating"
-          />
-          <div class="revision-actions">
-            <el-button type="primary" :loading="regenerating" :disabled="!canRegenerate" @click="regenerateTarget">
-              <el-icon><MagicStick /></el-icon>
-              按意见重生成并创建版本
-            </el-button>
-            <el-button v-if="aiField" :disabled="regenerating" @click="clearElementAnchor">取消选中</el-button>
-          </div>
-          <StageProgress
-            v-if="regenerating"
-            :percent="regenPercent"
-            :label="regenStageLabel"
-            :steps="regenStages"
-            :current="regenStageKey"
-            :started-at="regenStartedAt"
-          />
-        </div>
       </section>
+
+      <!-- 画布优先：配图与"提意见"以前常驻在画布下方，既把卡片拉得很长，又造成
+           "点完画布还要往下滚才能输入"的断层。现在收进右侧抽屉，点画布元素即自动打开。 -->
+      <el-drawer
+        v-model="panelOpen"
+        append-to-body
+        direction="rtl"
+        size="min(520px, 94vw)"
+        :title="panelTitle"
+      >
+        <el-tabs v-model="panelTab" class="panel-tabs">
+          <el-tab-pane label="提出修改" name="revision">
+            <div class="preview-instruction">
+              <label class="field-label" for="slide-anchor-instruction">
+                对「{{ anchorDescription }}」提意见
+              </label>
+              <el-input
+                id="slide-anchor-instruction"
+                v-model="aiInstruction"
+                type="textarea"
+                :rows="3"
+                maxlength="2000"
+                show-word-limit
+                placeholder="例如：这条要点太长了，改成学生一眼能看懂的短句"
+                :disabled="!canAnnotate || regenerating"
+              />
+              <div class="revision-actions">
+                <el-button
+                  type="primary"
+                  :loading="regenerating"
+                  :disabled="!canRegenerate"
+                  @click="regenerateTarget"
+                >
+                  <el-icon><MagicStick /></el-icon>
+                  按意见重生成并创建版本
+                </el-button>
+                <el-button v-if="aiField" :disabled="regenerating" @click="clearElementAnchor">
+                  取消选中
+                </el-button>
+              </div>
+              <p v-if="!aiField" class="panel-hint">
+                点画布上的标题、要点或讲稿选中一处，就能只改它；不选则对整页提意见。
+              </p>
+              <StageProgress
+                v-if="regenerating"
+                :percent="regenPercent"
+                :label="regenStageLabel"
+                :steps="regenStages"
+                :current="regenStageKey"
+                :started-at="regenStartedAt"
+              />
+            </div>
+          </el-tab-pane>
+
+          <el-tab-pane label="配图" name="image">
+            <div class="preview-image">
+              <!-- AI 生成配图：不必先去资料页上传图片，直接描述想要的画面即可 -->
+              <el-input
+                v-model="aiImagePrompt"
+                maxlength="600"
+                show-word-limit
+                placeholder="描述想要的配图，例如：切开的西瓜放在木桌上，扁平化教学插画，无文字"
+                :disabled="!canAnnotate || generatingImage"
+                @keydown.enter.exact.prevent="generateSlideImageByAI"
+              >
+                <template #append>
+                  <el-button
+                    :loading="generatingImage"
+                    :disabled="!canGenerateImage"
+                    @click="generateSlideImageByAI"
+                  >
+                    <el-icon v-if="!generatingImage"><MagicStick /></el-icon>
+                    AI 生成配图
+                  </el-button>
+                </template>
+              </el-input>
+
+              <div class="preview-image-row">
+                <div class="preview-image-pick">
+                  <el-select
+                    v-model="imageMaterialId"
+                    placeholder="选择一张图片资料"
+                    filterable
+                    clearable
+                    :disabled="!canAnnotate || savingImage"
+                  >
+                    <el-option
+                      v-for="item in imageMaterials"
+                      :key="item.material_id"
+                      :label="item.original_name"
+                      :value="item.material_id"
+                    />
+                  </el-select>
+                  <img v-if="selectedImageUrl" class="preview-image-thumb" :src="selectedImageUrl" alt="" />
+                </div>
+                <el-segmented
+                  v-model="imagePlacement"
+                  :options="PLACEMENT_OPTIONS"
+                  :disabled="!canAnnotate || savingImage || !imageMaterialId"
+                  @change="changeSlidePlacement"
+                />
+              </div>
+
+              <el-input
+                v-model="imageCaption"
+                maxlength="200"
+                show-word-limit
+                placeholder="图注（可选，显示在图片下方；背景图模式下并入讲稿）"
+                :disabled="!canAnnotate || savingImage || !imageMaterialId"
+              />
+              <p v-if="imageDirty" class="preview-image-hint">
+                素材或图注有改动，点下面的按钮生效；位置切换会立即生效。
+              </p>
+              <div class="revision-actions">
+                <el-button
+                  type="primary"
+                  :loading="savingImage"
+                  :disabled="!canApplyImage"
+                  @click="applySlideImage"
+                >
+                  <el-icon><Picture /></el-icon>
+                  应用配图并创建版本
+                </el-button>
+                <el-button v-if="previewSlide?.image" :disabled="savingImage" @click="removeSlideImage">
+                  移除配图
+                </el-button>
+                <!-- 一键补齐其余缺图页：整批只产生一个新版本 -->
+                <el-button :loading="illustrating" :disabled="!canIllustrate" @click="illustrateMissingSlides">
+                  <el-icon><MagicStick /></el-icon>
+                  为缺图页自动配图{{ missingImageCount ? `（${missingImageCount} 页）` : '' }}
+                </el-button>
+              </div>
+              <p v-if="!imageMaterials.length" class="preview-image-hint">
+                本项目还没有图片资料：可以直接在上面用 AI 生成配图，或到「资料」页上传一张图片。
+              </p>
+            </div>
+          </el-tab-pane>
+        </el-tabs>
+      </el-drawer>
 
       <section v-if="projectId && versions.length" class="section-card outputs-section">
         <div class="section-header">
@@ -469,6 +512,9 @@ const illustrating = ref(false)
 // 元素级锚点：先定位到某一页的某个字段，列表字段再细分到某一条
 const aiField = ref(null)
 const aiIndex = ref(null)
+// 右侧配置抽屉：'revision'（提意见）/ 'image'（配图）
+const panelOpen = ref(false)
+const panelTab = ref('revision')
 let taskStream = null
 
 const currentVersion = computed(() => versions.value[0] || null)
@@ -522,6 +568,12 @@ const anchorDescription = computed(() => {
   const label = FIELD_LABELS[aiField.value] || aiField.value
   return aiIndex.value === null ? `${base} · ${label}` : `${base} · ${label}第 ${aiIndex.value + 1} 条`
 })
+/** 抽屉标题：让教师一眼知道自己在改哪一页的哪一处。 */
+const panelTitle = computed(() => (
+  panelTab.value === 'image'
+    ? `配图 · ${previewSlide.value?.title || '当前页'}`
+    : `修改「${anchorDescription.value}」`
+))
 const canRegenerate = computed(() => Boolean(
   canAnnotate.value && aiTargetId.value && aiInstruction.value.trim() && !regenerating.value,
 ))
@@ -698,6 +750,14 @@ function selectPreviewElement({ field, index }) {
   aiTargetId.value = previewSlide.value.slide_id
   aiField.value = field
   aiIndex.value = index ?? null
+  // 选中即打开抽屉：否则教师点完还得自己去找输入框在哪
+  openPanel('revision')
+}
+
+/** 打开右侧配置抽屉；已经开着时只切换页签。 */
+function openPanel(tab = 'revision') {
+  panelTab.value = tab
+  panelOpen.value = true
 }
 
 function clearElementAnchor() {
@@ -1081,14 +1141,14 @@ onBeforeUnmount(() => {
 .task-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-  margin-bottom: 16px;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
 }
 
 .task-summary > div,
 .version-main {
   display: grid;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
@@ -1105,93 +1165,105 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.success-text { color: #16834b; }
+.success-text { color: var(--success-500); }
 
-.revision-section { display: grid; gap: 14px; }
-.ai-revision-form, .manual-revision-form { display: grid; gap: 14px; }
+.revision-section { display: grid; gap: var(--space-3); }
+.ai-revision-form, .manual-revision-form { display: grid; gap: var(--space-3); }
 
-.preview-section { display: grid; gap: 14px; }
-.outputs-section { display: grid; gap: 14px; }
-.outputs-empty { margin: 0; color: #64748b; font-size: 13px; }
+.preview-section { display: grid; gap: var(--space-4); }
+.outputs-section { display: grid; gap: var(--space-3); }
+.outputs-empty { margin: 0; color: var(--text-tertiary); font-size: var(--text-sm); }
 .preview-version { width: 220px; }
+
+/* 页头右侧工具：版本选择 + 两个抽屉入口 */
+.preview-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 
 .preview-body {
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: 200px minmax(0, 1fr);
+  gap: var(--space-4);
   align-items: start;
 }
 
 .preview-rail {
   display: grid;
-  gap: 6px;
-  max-height: 460px;
+  gap: var(--space-1);
+  max-height: 560px;
   overflow-y: auto;
 }
 
 .rail-item {
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
-  gap: 8px;
+  gap: var(--space-2);
   align-items: center;
-  padding: 8px;
-  border: 1px solid #e6eaf0;
-  border-radius: 8px;
-  background: #fff;
+  padding: var(--space-2);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
 }
 
-.rail-item:hover { border-color: #c7dcff; background: #f6f9ff; }
-.rail-item.is-current { border-color: #1463ff; background: #eef4ff; }
+.rail-item:hover { border-color: var(--brand-200); background: var(--brand-50); }
+.rail-item.is-current { border-color: var(--border-brand); background: var(--brand-50); }
 
 .rail-order {
   display: grid;
   place-items: center;
   aspect-ratio: 1;
-  border-radius: 6px;
-  background: #eef4ff;
-  color: #1463ff;
-  font-size: 12px;
-  font-weight: 700;
+  border-radius: var(--radius-sm);
+  background: var(--brand-50);
+  color: var(--text-brand);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
 }
 
 .rail-title {
   overflow: hidden;
-  color: #334155;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .preview-main { min-width: 0; }
 
-.preview-instruction {
-  display: grid;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid #e6eaf0;
-}
-
+/* 抽屉内的两块配置：不再需要顶部分隔线（它们已经不堆在卡片里了） */
+.preview-instruction,
 .preview-image {
   display: grid;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid #e6eaf0;
+  gap: var(--space-3);
+}
+
+.panel-tabs :deep(.el-tabs__header) {
+  margin-bottom: var(--space-5);
+}
+
+.panel-hint {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
 }
 
 .preview-image-row {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) auto;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
 }
 
 .preview-image-pick {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 56px;
-  gap: 10px;
+  gap: var(--space-2);
   align-items: center;
 }
 
@@ -1199,28 +1271,28 @@ onBeforeUnmount(() => {
   width: 56px;
   height: 40px;
   object-fit: cover;
-  border: 1px solid #e6eaf0;
-  border-radius: 6px;
-  background: #f8fafc;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-sunken);
 }
 
 .preview-image-hint {
   margin: 0;
-  color: #94a3b8;
-  font-size: 12px;
+  color: var(--text-disabled);
+  font-size: var(--text-xs);
 }
 
 .option-hint {
   float: right;
-  margin-left: 16px;
-  color: #94a3b8;
-  font-size: 12px;
+  margin-left: var(--space-4);
+  color: var(--text-disabled);
+  font-size: var(--text-xs);
 }
-.target-selectors { display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: 12px; align-items: center; }
+.target-selectors { display: grid; grid-template-columns: auto minmax(240px, 1fr); gap: var(--space-3); align-items: center; }
 
 .field-label {
-  color: #334155;
-  font-size: 14px;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
   font-weight: 600;
 }
 
@@ -1228,22 +1300,22 @@ onBeforeUnmount(() => {
 .version-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
-.patch-preview { margin-top: 2px; }
+.patch-preview { margin-top: var(--space-1); }
 
 .version-list,
-.output-grid { display: grid; gap: 4px; }
+.output-grid { display: grid; gap: var(--space-1); }
 
 .version-row,
 .output-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 16px;
+  gap: var(--space-4);
   align-items: center;
-  padding: 14px 0;
-  border-bottom: 1px solid #e6eaf0;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .version-row:last-child,
@@ -1252,12 +1324,12 @@ onBeforeUnmount(() => {
 .version-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .version-main span,
 .version-main small,
-.output-content span { color: #64748b; }
+.output-content span { color: var(--text-tertiary); }
 
 .output-item { grid-template-columns: 52px minmax(0, 1fr) auto; }
 
@@ -1265,14 +1337,14 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   aspect-ratio: 1;
-  border-radius: 6px;
-  background: #eef4ff;
-  color: #1463ff;
-  font-size: 12px;
-  font-weight: 700;
+  border-radius: var(--radius-sm);
+  background: var(--brand-50);
+  color: var(--text-brand);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
 }
 
-.output-content { display: grid; gap: 4px; min-width: 0; }
+.output-content { display: grid; gap: var(--space-1); min-width: 0; }
 
 @media (max-width: 900px) {
   .preview-body { grid-template-columns: 1fr; }
@@ -1284,7 +1356,7 @@ onBeforeUnmount(() => {
     max-height: none;
     overflow-x: auto;
     overflow-y: hidden;
-    padding-bottom: 4px;
+    padding-bottom: var(--space-1);
   }
 }
 

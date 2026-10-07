@@ -7,7 +7,13 @@ from docx import Document
 from backend.db.database import get_db
 from backend.main import app
 from backend.models.material import EvidenceChunk, Material
-from backend.services.generator import generate_docx, generate_html, generate_pdf, generate_pptx
+from backend.services.generator import (
+    COLOR_PRIMARY,
+    generate_docx,
+    generate_html,
+    generate_pdf,
+    generate_pptx,
+)
 
 
 def register(client, email: str):
@@ -22,6 +28,9 @@ def register(client, email: str):
 
 def complete_brief():
     return {
+        # 学科与学段也属于必确认的核心字段（决定学科规则与学段适配）
+        "subject": "信息技术",
+        "grade": "大一",
         "teaching_goal": "帮助学生理解 TCP 三次握手并解释每次报文的作用",
         "target_audience": "大一新生",
         "duration_minutes": 45,
@@ -502,7 +511,8 @@ def test_pptx_applies_the_visual_system(tmp_path, monkeypatch):
         assert "<a:ea" in cover and 'typeface="Microsoft YaHei"' in cover
         assert "<a:cs" in cover
         # 主色必须显式写入，不能依赖主题色
-        assert "1463FF" in cover.upper()
+        # 断言主题主色而不是写死色值：配色由 slide_theme.py 决定，换主题不该改测试
+        assert COLOR_PRIMARY in cover.upper()
         # 没有证据的页面不许出现「暂无可用证据」
         for name in ("ppt/slides/slide1.xml", "ppt/slides/slide2.xml"):
             assert "暂无可用证据" not in archive.read(name).decode("utf-8")
@@ -512,9 +522,10 @@ def test_pptx_applies_the_visual_system(tmp_path, monkeypatch):
     presentation = Presentation(path)
     cover_slide, body_slide, summary_slide = presentation.slides
     cover_blocks = [s for s in cover_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE]
-    # 封面有一条贯穿整页的深色带
+    # 封面有一整片主蓝底（参考课件：底部留一条白带放页脚，所以不是"贯穿到最底"）
     assert len(_full_bleed_shapes(cover_slide, presentation)) == 0
-    assert any(shape.height == presentation.slide_height for shape in cover_blocks)
+    band_heights = [shape.height / 914400 for shape in cover_blocks]
+    assert max(band_heights) >= 6.5, f"封面主蓝底太小：{max(band_heights):.2f}in"
     # 标准页有顶部品牌条 + 标题下划线，且没有整页色块
     body_kinds = [s.shape_type for s in body_slide.shapes if s.shape_type == MSO_SHAPE_TYPE.AUTO_SHAPE]
     assert body_kinds
@@ -570,7 +581,7 @@ def test_pptx_uses_named_layouts_placeholders_and_theme(tmp_path, monkeypatch):
     with zipfile.ZipFile(path) as archive:
         theme = archive.read("ppt/theme/theme1.xml").decode("utf-8")
         # 主题配色与中文字体都要落进 theme1.xml，占位符和表格才会自动跟随
-        assert "1463FF" in theme.upper()
+        assert COLOR_PRIMARY in theme.upper()
         assert theme.count("Microsoft YaHei") >= 6
         # script="Hans" 的优先级高于 a:ea，中文必须两处都改
         assert 'script="Hans" typeface="Microsoft YaHei"' in theme
@@ -605,7 +616,7 @@ def test_pptx_renders_keyword_emphasis(tmp_path, monkeypatch):
     ]
     assert len(emphasised) == 1
     assert emphasised[0].font.bold is True
-    assert str(emphasised[0].font.color.rgb) == "1463FF"
+    assert str(emphasised[0].font.color.rgb) == COLOR_PRIMARY
 
     rendered = "".join(
         run.text

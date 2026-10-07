@@ -52,6 +52,8 @@ def create_project_with_plan(client, headers):
         f"/api/v1/projects/{project_id}/brief",
         headers=headers,
         json={
+            "subject": "物理",
+            "grade": "初二",
             "teaching_goal": "理解 TCP 三次握手",
             "target_audience": "大一新生",
             "duration_minutes": 45,

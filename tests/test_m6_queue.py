@@ -70,7 +70,8 @@ def test_task_claim_updates_heartbeat_and_progress():
         touch_task(db, task, "plan", detail="review")
         assert task.stage == "plan"
         assert task.stage_label == "AI 正在审校教学事实"
-        assert task.progress == 61
+        # 加入流水线阶段（骨架/填充）后，审校的百分比相应上调，保证进度条单调
+        assert task.progress == 64
     finally:
         db.close()
 

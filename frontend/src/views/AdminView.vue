@@ -1,19 +1,18 @@
 <template>
   <div class="page-stack admin-page">
-    <header class="page-header">
-      <div class="admin-heading">
-        <p class="admin-kicker">平台管理 · 只读目录</p>
-        <h1>管理员工作台</h1>
-        <p>查看平台用户的真实账号、角色和启用状态。数据来自当前服务端数据库。</p>
-      </div>
-      <div class="header-actions">
+    <AppPageHeader
+      eyebrow="平台管理 · 只读目录"
+      title="管理员工作台"
+      subtitle="查看平台用户的账号、角色与启用状态，数据来自当前服务端数据库。"
+    >
+      <template #actions>
         <el-tag type="warning" effect="plain">管理员权限</el-tag>
         <el-button :loading="loading" @click="loadUsers">
           <el-icon><Refresh /></el-icon>
           刷新用户
         </el-button>
-      </div>
-    </header>
+      </template>
+    </AppPageHeader>
 
     <el-alert
       v-if="pageError"
@@ -92,12 +91,14 @@
       </div>
 
       <el-skeleton v-if="loading && !users.length" :rows="6" animated />
-      <el-empty
+      <AppEmptyState
         v-else-if="!filteredUsers.length"
-        :description="hasFilters ? '没有匹配的用户，请调整筛选条件' : '当前还没有用户账号'"
+        :icon="User"
+        :title="hasFilters ? '没有匹配的用户' : '当前还没有用户账号'"
+        :description="hasFilters ? '换个关键词或清空筛选条件再试。' : '有人注册后，账号会出现在这里。'"
       >
-        <el-button v-if="hasFilters" type="primary" plain @click="clearFilters">清除筛选</el-button>
-      </el-empty>
+        <el-button v-if="hasFilters" type="primary" @click="clearFilters">清除筛选</el-button>
+      </AppEmptyState>
       <div v-else class="table-wrap">
         <table class="data-table admin-user-table">
           <caption class="visually-hidden">平台用户目录</caption>
@@ -138,8 +139,10 @@
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { Avatar, CircleCheck, Key, Refresh, UserFilled } from '@element-plus/icons-vue'
+import { Avatar, CircleCheck, Key, Refresh, User, UserFilled } from '@element-plus/icons-vue'
 import { fetchAdminUsers } from '@/api'
+import AppPageHeader from '@/components/common/AppPageHeader.vue'
+import AppEmptyState from '@/components/common/AppEmptyState.vue'
 
 const users = ref([])
 const loading = ref(false)
@@ -212,10 +215,10 @@ onMounted(loadUsers)
 }
 
 .admin-kicker {
-  margin: 0 0 8px;
-  color: #1463ff;
-  font-size: 12px;
-  font-weight: 800;
+  margin: 0 0 var(--space-2);
+  color: var(--text-brand);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -225,18 +228,18 @@ onMounted(loadUsers)
 }
 
 .admin-icon-green {
-  background: #ecfdf5;
-  color: #15803d;
+  background: var(--success-50);
+  color: var(--success-600);
 }
 
 .admin-icon-amber {
-  background: #fffbeb;
-  color: #b45309;
+  background: var(--warning-50);
+  color: var(--warning-600);
 }
 
 .admin-icon-slate {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--neutral-100);
+  color: var(--text-secondary);
 }
 
 .directory-header {
@@ -245,27 +248,27 @@ onMounted(loadUsers)
 
 .directory-meta {
   flex: 0 0 auto;
-  color: #64748b;
-  font-size: 13px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 
 .directory-toolbar {
   display: grid;
   grid-template-columns: minmax(260px, 1fr) 160px 160px auto;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: end;
-  margin-bottom: 18px;
+  margin-bottom: var(--space-4);
 }
 
 .filter-field {
   display: grid;
-  gap: 7px;
+  gap: var(--space-2);
 }
 
 .filter-field label {
-  color: #475569;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
   font-weight: 700;
 }
 
@@ -276,7 +279,7 @@ onMounted(loadUsers)
 .clear-filter {
   min-height: 32px;
   justify-self: start;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
 }
 
 .admin-user-table {
@@ -290,23 +293,23 @@ onMounted(loadUsers)
 }
 
 .user-name {
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .user-email {
-  margin-top: 4px;
-  color: #334155;
+  margin-top: var(--space-1);
+  color: var(--text-secondary);
   overflow-wrap: anywhere;
 }
 
 .user-id {
-  margin-top: 4px;
-  color: #94a3b8;
-  font-size: 12px;
+  margin-top: var(--space-1);
+  color: var(--text-disabled);
+  font-size: var(--text-xs);
 }
 
 .user-date {
-  color: #475569;
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -315,7 +318,7 @@ onMounted(loadUsers)
   width: 1px;
   height: 1px;
   padding: 0;
-  margin: -1px;
+  margin: calc(var(--space-1) * -1);
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;

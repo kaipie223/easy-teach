@@ -1,38 +1,95 @@
 <template>
   <main class="auth-page">
-    <section class="auth-panel" aria-labelledby="auth-title">
-      <div class="auth-mark">ET</div>
-      <p class="eyebrow">EASY-TEACH</p>
-      <h1 id="auth-title">{{ isRegister ? '创建教师账号' : '登录工作台' }}</h1>
-      <p class="auth-intro">{{ isRegister ? '注册后即可保存课程项目和对话记录。' : '继续管理你的教学项目。' }}</p>
+    <!-- 与"新建教案"页同款的 Stripe 式动态极光，且跟随鼠标；
+         下层的静态 mesh 保留作为 WebGL 不可用时的兜底 -->
+    <div class="auth-backdrop surface-mesh" aria-hidden="true" />
+    <AuroraBackdrop class="auth-aurora" />
 
-      <el-form ref="formRef" :model="form" :rules="rules" label-position="top" @submit.prevent="submit">
-        <el-form-item v-if="isRegister" label="显示名称" prop="display_name">
-          <el-input v-model="form.display_name" placeholder="例如：张老师" autocomplete="name" />
-        </el-form-item>
-        <el-form-item label="邮箱" prop="email">
-          <el-input v-model="form.email" type="email" placeholder="teacher@example.com" autocomplete="email" />
-        </el-form-item>
-        <el-form-item label="密码" prop="password">
-          <el-input
-            v-model="form.password"
-            type="password"
-            show-password
-            :placeholder="isRegister ? '至少 8 个字符' : '请输入密码'"
-            :autocomplete="isRegister ? 'new-password' : 'current-password'"
-            @keydown.enter="submit"
+    <section class="auth-shell" aria-labelledby="auth-title">
+      <header class="auth-brand">
+        <img class="brand-lockup" :src="logoLockup" alt="easy-teach" />
+      </header>
+
+      <div class="auth-card">
+        <p class="eyebrow">{{ isRegister ? '新账号' : '欢迎回来' }}</p>
+        <h1 id="auth-title" class="auth-title">
+          {{ isRegister ? '创建教师账号' : '登录工作台' }}
+        </h1>
+        <p class="auth-subtitle">
+          {{
+            isRegister
+              ? '注册后即可保存课程项目与共创记录。'
+              : '继续打磨你的下一节课。'
+          }}
+        </p>
+
+        <el-form
+          ref="formRef"
+          class="auth-form"
+          :model="form"
+          :rules="rules"
+          label-position="top"
+          @submit.prevent="submit"
+        >
+          <el-form-item v-if="isRegister" label="显示名称" prop="display_name">
+            <el-input
+              v-model="form.display_name"
+              size="large"
+              placeholder="例如：张老师"
+              autocomplete="name"
+            />
+          </el-form-item>
+
+          <el-form-item label="邮箱" prop="email">
+            <el-input
+              v-model="form.email"
+              size="large"
+              type="email"
+              placeholder="teacher@example.com"
+              autocomplete="email"
+            />
+          </el-form-item>
+
+          <el-form-item label="密码" prop="password">
+            <el-input
+              v-model="form.password"
+              size="large"
+              type="password"
+              show-password
+              :placeholder="isRegister ? '至少 8 个字符' : '请输入密码'"
+              :autocomplete="isRegister ? 'new-password' : 'current-password'"
+              @keydown.enter="submit"
+            />
+          </el-form-item>
+
+          <el-alert
+            v-if="errorMessage"
+            class="auth-error"
+            :title="errorMessage"
+            type="error"
+            show-icon
+            :closable="false"
           />
-        </el-form-item>
 
-        <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false" />
-        <el-button class="submit-button" type="primary" native-type="submit" :loading="auth.loading">
-          {{ isRegister ? '注册并进入' : '登录' }}
-        </el-button>
-      </el-form>
+          <el-button
+            class="auth-submit"
+            type="primary"
+            size="large"
+            native-type="submit"
+            :loading="auth.loading"
+          >
+            {{ isRegister ? '注册并进入' : '登录' }}
+          </el-button>
+        </el-form>
 
-      <button class="mode-button" type="button" @click="toggleMode">
-        {{ isRegister ? '已有账号？返回登录' : '还没有账号？注册一个' }}
-      </button>
+        <button class="auth-switch" type="button" @click="toggleMode">
+          {{ isRegister ? '已有账号？返回登录' : '还没有账号？注册一个' }}
+        </button>
+      </div>
+
+      <p class="auth-footnote">
+        多模态 AI 教学智能体 · 从需求共创到可直接上课的教案
+      </p>
     </section>
   </main>
 </template>
@@ -41,6 +98,8 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import logoLockup from '@/assets/brand/logo-lockup.png'
+import AuroraBackdrop from '@/components/common/AuroraBackdrop.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -98,78 +157,113 @@ async function submit() {
 
 <style scoped>
 .auth-page {
-  min-height: 100vh;
+  position: relative;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
-  padding: 24px;
-  background: #f4f7fb;
+  padding: var(--space-10) var(--space-6);
+  overflow: hidden;
 }
 
-.auth-panel {
+/* 静态 mesh 留在最底层兜底（WebGL 不可用时它还在）；动效层铺满视口，
+   卡片由 .auth-shell（position: relative）自然浮在上面 */
+.auth-backdrop {
+  position: absolute;
+  inset: -20%;
+  opacity: 0.7;
+  filter: saturate(1.05);
+}
+
+.auth-aurora {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.auth-shell {
+  position: relative;
   width: min(100%, 420px);
-  padding: 34px;
-  border: 1px solid #dfe6ef;
-  border-radius: 10px;
-  background: #ffffff;
-  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
 }
 
-.auth-mark {
-  width: 38px;
-  height: 38px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: #1463ff;
-  color: #ffffff;
-  font-weight: 800;
-  letter-spacing: 0;
+.auth-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.eyebrow {
-  margin: 20px 0 8px;
-  color: #1463ff;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 1px;
+.brand-lockup {
+  width: 156px;
+  height: auto;
 }
 
-h1 {
-  margin: 0;
-  color: #0f172a;
-  font-size: 26px;
-  line-height: 1.25;
+.auth-card {
+  padding: var(--space-10) var(--space-8);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-xl);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-overlay);
 }
 
-.auth-intro {
-  margin: 10px 0 26px;
-  color: #64748b;
-  font-size: 14px;
+.auth-title {
+  margin-top: var(--space-3);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+  color: var(--text-primary);
 }
 
-.submit-button {
+.auth-subtitle {
+  margin-top: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.auth-form {
+  margin-top: var(--space-8);
+}
+
+.auth-error {
+  margin-bottom: var(--space-4);
+}
+
+.auth-submit {
   width: 100%;
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
-.mode-button {
+.auth-switch {
+  display: block;
   width: 100%;
-  margin-top: 18px;
+  margin-top: var(--space-5);
   padding: 0;
   border: 0;
   background: transparent;
-  color: #1463ff;
-  font-size: 14px;
+  color: var(--text-brand);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-standard);
 }
 
-.mode-button:hover {
-  color: #0b45b4;
+.auth-switch:hover { color: var(--brand-800); }
+
+.auth-footnote {
+  text-align: center;
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
 }
 
 @media (max-width: 480px) {
-  .auth-panel {
-    padding: 26px 20px;
+  .auth-page { padding: var(--space-6) var(--space-4); }
+
+  .auth-card {
+    padding: var(--space-8) var(--space-5);
   }
+
+  .auth-title { font-size: var(--text-xl); }
 }
 </style>
