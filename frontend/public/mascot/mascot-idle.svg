@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">托托待机状态</title>
+  <desc id="desc">蓝色圆角文件夹精灵，正在安静待机。</desc>
+  <g id="mascot">
+    <ellipse id="shadow" cx="256" cy="438" rx="112" ry="14" fill="#25434A" opacity=".12"/>
+    <g id="folder-tab">
+      <path d="M166 151C166 132 181 117 200 117H254L279 144H342C361 144 376 159 376 178V195H166V151Z" fill="#0F8D76" stroke="#25434A" stroke-width="10" stroke-linejoin="round"/>
+    </g>
+    <g id="body">
+      <rect x="116" y="154" width="280" height="270" rx="58" fill="#9ACED1" stroke="#25434A" stroke-width="10"/>
+      <path d="M150 338C190 365 322 365 362 338V376C362 395 347 410 328 410H184C165 410 150 395 150 376V338Z" fill="#72B5BC" opacity=".8"/>
+    </g>
+    <g id="arm-left" fill="none" stroke="#25434A" stroke-width="12" stroke-linecap="round">
+      <path d="M122 292C94 294 82 316 92 339C100 357 115 362 130 354"/>
+      <circle cx="91" cy="340" r="8" fill="#FFB547" stroke="none"/>
+    </g>
+    <g id="arm-right" fill="none" stroke="#25434A" stroke-width="12" stroke-linecap="round">
+      <path d="M390 292C418 294 430 316 420 339C412 357 397 362 382 354"/>
+      <circle cx="421" cy="340" r="8" fill="#FFB547" stroke="none"/>
+    </g>
+    <g id="face">
+      <rect x="165" y="190" width="182" height="106" rx="48" fill="#FFFFFF"/>
+    </g>
+    <circle id="eye-left" cx="216" cy="236" r="12" fill="#25434A"/>
+    <circle id="eye-right" cx="296" cy="236" r="12" fill="#25434A"/>
+    <path id="mouth" d="M239 260C248 269 264 269 273 260" fill="none" stroke="#25434A" stroke-width="8" stroke-linecap="round"/>
+    <g id="progress">
+      <rect x="190" y="330" width="132" height="30" rx="15" fill="#FFFFFF" opacity=".9"/>
+      <circle cx="211" cy="345" r="7" fill="#0F8D76"/>
+      <circle cx="256" cy="345" r="7" fill="#0F8D76" opacity=".55"/>
+      <circle cx="301" cy="345" r="7" fill="#0F8D76" opacity=".3"/>
+    </g>
+    <g id="badge">
+      <circle cx="351" cy="174" r="22" fill="#FFB547" stroke="#25434A" stroke-width="7"/>
+      <path d="M341 174L348 181L362 166" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>

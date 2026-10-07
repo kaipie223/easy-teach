@@ -10,12 +10,19 @@
       />
 
       <section class="section-card create-card">
-        <span class="card-mark" aria-hidden="true">
-          <el-icon><EditPen /></el-icon>
-        </span>
+        <div class="card-top">
+          <div class="card-intro">
+            <span class="card-mark" aria-hidden="true">
+              <el-icon><EditPen /></el-icon>
+            </span>
 
-        <h2>这节课你要讲什么？</h2>
-        <p class="card-subtitle">写下课题，我会先陪你确认学段、课时与重难点。</p>
+            <h2>这节课你要讲什么？</h2>
+            <p class="card-subtitle">写下课题，我会先陪你确认学段、课时与重难点。</p>
+          </div>
+
+          <!-- 首次进入是"准备开始"的语气：托托在这里打招呼 -->
+          <TotoMascot class="card-toto" state="welcome" :size="148" />
+        </div>
 
         <ul class="step-list">
           <li v-for="item in steps" :key="item">
@@ -71,6 +78,7 @@ import { useProjectStore } from '@/stores/project'
 import { createProject } from '@/api'
 import AppPageHeader from '@/components/common/AppPageHeader.vue'
 import AuroraBackdrop from '@/components/common/AuroraBackdrop.vue'
+import TotoMascot from '@/components/common/TotoMascot.vue'
 
 const router = useRouter()
 const sessionStore = useSessionStore()
@@ -136,6 +144,28 @@ async function handleCreate() {
   padding: var(--space-8);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-overlay);
+}
+
+/* 卡片顶部：左边说明、右边托托；窄屏改成上下，角色居中不挤压文字 */
+.card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.card-intro { min-width: 0; }
+
+.card-toto { flex: none; }
+
+@media (max-width: 640px) {
+  .card-top {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-4);
+  }
+
+  .card-toto { align-self: center; }
 }
 
 .card-mark {

@@ -44,6 +44,7 @@
         </div>
         <StageProgress
           class="task-progress"
+          :mascot="true"
           :percent="task.progress"
           :label="task.stage_label || statusLabel"
           :steps="task.stages"
@@ -203,6 +204,7 @@
               </p>
               <StageProgress
                 v-if="regenerating"
+                :mascot="true"
                 :percent="regenPercent"
                 :label="regenStageLabel"
                 :steps="regenStages"
@@ -359,13 +361,14 @@
                 </el-button>
               </div>
               <StageProgress
-            v-if="regenerating"
-            :percent="regenPercent"
-            :label="regenStageLabel"
-            :steps="regenStages"
-            :current="regenStageKey"
-            :started-at="regenStartedAt"
-          />
+                v-if="regenerating"
+                :mascot="true"
+                :percent="regenPercent"
+                :label="regenStageLabel"
+                :steps="regenStages"
+                :current="regenStageKey"
+                :started-at="regenStartedAt"
+              />
             </div>
           </el-tab-pane>
           <el-tab-pane label="结构化修改" name="manual">
@@ -935,7 +938,8 @@ async function regenerateTarget() {
       onProgress: (payload) => {
         regenStageLabel.value = payload?.stage_label || payload?.label || regenStageLabel.value
         regenPercent.value = payload?.percent ?? regenPercent.value
-        regenStageKey.value = payload?.stage || regenStageKey.value
+        // step 是里程碑（步骤条里存在的那个），stage 可能是子阶段名
+        regenStageKey.value = payload?.step || payload?.stage || regenStageKey.value
         if (payload?.stages?.length) regenStages.value = payload.stages
       },
       onResult: (payload) => { created = payload },

@@ -45,25 +45,27 @@
       <div class="chat-workspace">
         <section class="chat-main">
           <div ref="msgListRef" class="chat-messages">
-            <el-alert
-              v-if="aiError"
-              :title="aiError.message"
-              :description="aiError.suggested_action"
-              type="error"
-              show-icon
-              closable
-              class="chat-alert"
-              @close="aiError = null"
-            >
-              <el-button
-                v-if="initialStartFailed"
-                size="small"
-                type="primary"
-                @click="startInitialConversation"
+            <div v-if="aiError" class="chat-error">
+              <TotoMascot class="chat-error-toto" state="error" :size="72" />
+              <el-alert
+                :title="aiError.message"
+                :description="aiError.suggested_action"
+                type="error"
+                show-icon
+                closable
+                class="chat-alert"
+                @close="aiError = null"
               >
-                重试 AI 开场
-              </el-button>
-            </el-alert>
+                <el-button
+                  v-if="initialStartFailed"
+                  size="small"
+                  type="primary"
+                  @click="startInitialConversation"
+                >
+                  重试 AI 开场
+                </el-button>
+              </el-alert>
+            </div>
 
             <div class="message-column">
               <div v-if="!messages.length" class="chat-starter">
@@ -159,6 +161,7 @@ import MessageBubble from '@/components/chat/MessageBubble.vue'
 import QuestionCard from '@/components/chat/QuestionCard.vue'
 import ConfirmPanel from '@/components/chat/ConfirmPanel.vue'
 import ChatInput from '@/components/chat/ChatInput.vue'
+import TotoMascot from '@/components/common/TotoMascot.vue'
 import VoiceInput from '@/components/chat/VoiceInput.vue'
 import TeachingBriefPanel from '@/components/chat/TeachingBriefPanel.vue'
 
@@ -583,6 +586,23 @@ if (sessionId.value) {
   color: var(--text-tertiary);
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
+}
+
+/* 出错：托托在左，可关闭的说明在右（说明必须能关，所以没换成提示块） */
+.chat-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.chat-error-toto {
+  flex: none;
+}
+
+.chat-error .chat-alert {
+  flex: 1;
+  min-width: 0;
 }
 
 /* 对话列收窄到阅读宽度：满屏宽的消息读起来很累 */

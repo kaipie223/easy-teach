@@ -206,6 +206,30 @@ def percent_of(
     return entry[1] if entry else 0
 
 
+def step_of(
+    stages: Iterable[Stage],
+    key: str | None,
+    branches: dict[str, tuple[str, int]] | None = None,
+) -> str | None:
+    """把当前阶段归到步骤条里的那一步（里程碑）。
+
+    ``skeleton`` / ``fill_teaching`` / ``fill_slides`` 这类子阶段只负责改写"正在做
+    什么"，步骤条里并不存在它们。前端拿 ``stage`` 去匹配步骤条会**一个都对不上**，
+    于是所有步骤都是灰的、当前步骤没有高亮 —— 表现就是"只有进度条，看不出现在在哪
+    一步"。这里按百分比把它归到不高于它的最近一个里程碑。
+    """
+    if key is None:
+        return None
+    milestones = list(stages)
+    if any(stage.key == key for stage in milestones):
+        return key
+    entry = stage_table(milestones, branches).get(key)
+    if entry is None:
+        return key
+    reached = [stage for stage in milestones if stage.percent <= entry[1]]
+    return max(reached, key=lambda stage: stage.percent).key if reached else key
+
+
 def manifest(stages: Iterable[Stage]) -> list[dict[str, object]]:
     """The ordered list the client turns into a stepper."""
     return [
@@ -230,6 +254,9 @@ def frame(
     """
     payload: dict[str, object] = {
         "stage": key,
+        # 步骤条要的是"第几步"（里程碑），不是子阶段名。两个都下发，前端各取所需：
+        # stage 决定文案，step 决定步骤条高亮。
+        "step": step_of(stages, key, branches),
         "stage_label": detail or label_of(stages, key, branches),
         "percent": percent_of(stages, key, branches),
     }
