@@ -1,32 +1,26 @@
 <template>
   <div :class="['message-bubble-row', role]">
-    <div class="bubble-avatar">
-      <el-avatar :size="32" :style="{ background: role === 'assistant' ? '#1463ff' : '#10b981' }">
-        {{ role === 'assistant' ? 'AI' : '我' }}
-      </el-avatar>
+    <div class="bubble-avatar" aria-hidden="true">
+      <span class="avatar-mark">{{ role === 'assistant' ? 'ET' : '我' }}</span>
     </div>
     <div class="bubble-body">
       <div class="bubble-header">
-        <span class="bubble-sender">{{ role === 'assistant' ? 'TeachMate AI' : '我' }}</span>
-        <span class="bubble-time">{{ formatTime(timestamp) }}</span>
+        <span class="bubble-sender">{{ role === 'assistant' ? 'easy-teach' : '我' }}</span>
+        <span class="bubble-time text-tabular">{{ formatTime(timestamp) }}</span>
       </div>
       <div class="bubble-content">
         <template v-if="typing">
           <span class="typing-text">{{ content }}</span>
-          <span class="cursor-blink">|</span>
+          <span class="cursor-blink" aria-hidden="true">|</span>
         </template>
-        <template v-else>
-          {{ content }}
-        </template>
+        <template v-else>{{ content }}</template>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-
-const props = defineProps({
+defineProps({
   role: { type: String, default: 'assistant', validator: v => ['user', 'assistant'].includes(v) },
   content: { type: String, default: '' },
   timestamp: { type: [String, Date], default: () => new Date().toISOString() },
@@ -35,7 +29,7 @@ const props = defineProps({
 
 function formatTime(ts) {
   const d = new Date(ts)
-  if (isNaN(d.getTime())) return ''
+  if (Number.isNaN(d.getTime())) return ''
   return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 </script>
@@ -43,80 +37,96 @@ function formatTime(ts) {
 <style scoped>
 .message-bubble-row {
   display: flex;
-  gap: 10px;
-  padding: 8px 0;
+  gap: var(--space-3);
+  align-items: flex-start;
 }
 
-.message-bubble-row.assistant {
-  flex-direction: row;
+.message-bubble-row.user { flex-direction: row-reverse; }
+
+.avatar-mark {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
 }
 
-.message-bubble-row.user {
-  flex-direction: row-reverse;
+.assistant .avatar-mark {
+  background: var(--gradient-brand);
+  color: var(--text-inverse);
 }
 
-.bubble-avatar {
-  flex: 0 0 auto;
-  padding-top: 2px;
+.user .avatar-mark {
+  background: var(--neutral-150);
+  color: var(--text-secondary);
 }
 
 .bubble-body {
-  max-width: 72%;
+  min-width: 0;
+  max-width: 78%;
 }
 
 .bubble-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 4px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
 }
 
+.user .bubble-header { flex-direction: row-reverse; }
+
 .bubble-sender {
-  font-size: 13px;
-  font-weight: 700;
-  color: #374151;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  color: var(--text-secondary);
 }
 
 .bubble-time {
-  font-size: 12px;
-  color: #9ca3af;
+  font-size: var(--text-xs);
+  color: var(--text-tertiary);
 }
 
 .bubble-content {
-  padding: 10px 14px;
-  border-radius: 8px;
-  line-height: 1.65;
-  font-size: 14px;
-  color: #1f2937;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-base);
+  line-height: var(--leading-relaxed);
   word-break: break-word;
 }
 
+/* 助手：直接落在白色会话面板上，不再套一层白气泡（那会和背景糊在一起）；
+   用户：主色实底气泡，形成明确的"我说 / 它说"对比。 */
 .assistant .bubble-content {
-  background: #eef5ff;
-  border-top-left-radius: 2px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--text-primary);
 }
 
 .user .bubble-content {
-  background: #1463ff;
-  color: #ffffff;
-  border-top-right-radius: 2px;
+  background: var(--brand-500);
+  color: var(--text-inverse);
+  border-top-right-radius: var(--radius-xs);
 }
 
-.user .bubble-header {
-  flex-direction: row-reverse;
-}
-
-.typing-text {
-  white-space: pre-wrap;
-}
+.typing-text { white-space: pre-wrap; }
 
 .cursor-blink {
   animation: blink 0.8s step-end infinite;
-  color: #1463ff;
-  font-weight: 700;
+  color: var(--text-brand);
+  font-weight: var(--weight-bold);
 }
+
+.user .cursor-blink { color: var(--text-inverse); }
 
 @keyframes blink {
   50% { opacity: 0; }
+}
+
+@media (max-width: 480px) {
+  .bubble-body { max-width: 88%; }
 }
 </style>

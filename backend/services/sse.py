@@ -37,7 +37,11 @@ def encode_sse(event: str, payload: Any) -> str:
     `payload` is serialised unless it is already a string, so callers can send a
     JSON object or a pre-rendered body without special-casing.
     """
-    body = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+    # default=str 是护栏：载荷里一旦混进不可序列化的对象（例如被当成帧转发的异常），
+    # 宁可退化成可读文本，也不要在编码这一层把整条流打断。
+    body = payload if isinstance(payload, str) else json.dumps(
+        payload, ensure_ascii=False, default=str
+    )
     return f"event: {event}\ndata: {body}\n\n"
 
 

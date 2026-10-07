@@ -53,4 +53,4 @@ async def project_chat(
         db.add(session)
         db.commit()
         db.refresh(session)
-    return await create_chat_stream(session, message, db)
+    return await create_chat_stream(session, message, db, skip_field=req.skip_field)

@@ -235,6 +235,9 @@ export function buildCoursewarePlan(projectId, options = {}) {
     force_rebuild: Boolean(options.forceRebuild),
     generation_mode: options.generationMode || 'ai',
     allow_template_fallback: Boolean(options.allowTemplateFallback),
+    // 三态：undefined 表示"按服务端配置"，显式布尔表示教师的选择。不要用
+    // Boolean() 包一层，否则"没选"会被压成 false，等于替教师关掉了深度思考。
+    ...(typeof options.deepThinking === 'boolean' ? { deep_thinking: options.deepThinking } : {}),
   }, {
     timeout: 10 * 60 * 1000,
   })
@@ -312,6 +315,14 @@ export function createVersionExports(projectId, artifactVersionId, formats = ['p
     formats,
     force,
   }, { timeout: 30000 })
+}
+
+/**
+ * 幻灯片主题（色板与字号）。应用内预览与导出的 PPTX 必须画同一页，色值只在后端
+ * 定义一份；启动时取一次写成 CSS 变量。无需登录即可取。
+ */
+export function fetchSlideTheme() {
+  return api.get('/slide-theme')
 }
 
 export function generateSlideImage(projectId, prompt) {

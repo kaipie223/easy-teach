@@ -27,4 +27,4 @@ async def chat(
         raise ApiError("消息不能为空", code="empty_message", status_code=422)
     session = get_session_for_user(db, session_id, user)
     consume_model_quota(user.user_id)
-    return await create_chat_stream(session, message, db)
+    return await create_chat_stream(session, message, db, skip_field=req.skip_field)

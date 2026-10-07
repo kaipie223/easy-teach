@@ -7,15 +7,24 @@ import json
 import logging
 import re
 import uuid
+from math import ceil
 from typing import Any
 
 from backend.config import settings
 from backend.schemas import (  # noqa: F401 - strip_emphasis re-exported
     CANONICAL_LAYOUTS,
     EMPHASIS_PATTERN,
+    SCENE_KIND_EXPRESSION_PROPS,
+    SCENE_PALETTE,
     normalize_layout,
     strip_emphasis,
 )
+from backend.services.expressions import (
+    ExpressionError,
+    referenced_names,
+    to_javascript,
+)
+from backend.services.slide_theme import DEFAULT_THEME
 
 logger = logging.getLogger(__name__)
 
@@ -23,46 +32,95 @@ logger = logging.getLogger(__name__)
 SLIDE_WIDTH_IN = 13.333
 SLIDE_HEIGHT_IN = 7.5
 # Content area between the title band and the source/page footer.
+#
+# 构图取自教师给的参考课件：顶部粗色条（左）+ 右上角课程名 → 页面标题在内容框上方
+# → 浅灰内容框（导语在框内顶部）→ 三栏页脚。几何全部由这几条常量推导，改一处全册生效。
 CONTENT_LEFT_IN = 0.65
-CONTENT_TOP_IN = 1.90
+CONTENT_TOP_IN = 1.15
 CONTENT_WIDTH_IN = SLIDE_WIDTH_IN - 2 * CONTENT_LEFT_IN
-CONTENT_HEIGHT_IN = 4.30
+CONTENT_HEIGHT_IN = 5.30
 CAPTION_HEIGHT_IN = 0.4
-TITLE_TOP_IN = 0.52
-TITLE_HEIGHT_IN = 0.86
-LEAD_TOP_IN = 1.44
-LEAD_HEIGHT_IN = 0.34
-SOURCE_TOP_IN = 6.5
-FOOTER_TOP_IN = 6.9
+# 标题与导语都在内容框**内部**（参考课件就是这样：整块浅灰区自成页面），
+# 面板已被压到底层，所以标题不会被盖住。
+TITLE_TOP_IN = 1.28
+TITLE_HEIGHT_IN = 0.58
+LEAD_TOP_IN = 2.00
+LEAD_HEIGHT_IN = 0.32
+SOURCE_TOP_IN = 6.50
+FOOTER_TOP_IN = 6.88
+# 封面整版主蓝的高度：底部留一条白带放页脚（参考课件就是这样）
+COVER_BAND_HEIGHT_IN = 6.88
 IMAGE_PLACEMENTS = ("right", "full", "background")
-# 内容面板：要点装进圆角浅色底板，页面才有"容器"与层次，而不是一行行裸文本。
+# 内容框：参考课件用整块浅灰底 + 细边框，而不是圆角浅蓝卡片。
 PANEL_BOXES: dict[str, tuple[float, float, float, float]] = {
     "right": (0.72, CONTENT_TOP_IN, 5.58, CONTENT_HEIGHT_IN),
     "full": (0.72, CONTENT_TOP_IN, 11.90, CONTENT_HEIGHT_IN),
     "background": (0.72, CONTENT_TOP_IN, 11.90, CONTENT_HEIGHT_IN),
 }
-# 面板内留出内边距之后的正文框。`right` 把另一半让给配图。
+# 框内留出内边距（并给导语让出位置）之后的正文框。`right` 把另一半让给配图。
 TEXT_BOXES: dict[str, tuple[float, float, float, float]] = {
-    "right": (1.02, CONTENT_TOP_IN + 0.16, 4.98, CONTENT_HEIGHT_IN - 0.32),
-    "full": (1.02, CONTENT_TOP_IN + 0.16, 11.30, CONTENT_HEIGHT_IN - 0.32),
-    "background": (1.02, CONTENT_TOP_IN + 0.16, 11.30, CONTENT_HEIGHT_IN - 0.32),
+    "right": (1.02, 2.42, 4.98, 3.83),
+    "full": (1.02, 2.42, 11.30, 3.83),
+    "background": (1.02, 2.42, 11.30, 3.83),
 }
+# 正文目标字号与下限。
+#
+# 12pt 在 13.3in 宽的投影画布上偏小（教室后排读不清）。所以先按 14pt 排版，一页装
+# 不下时**拆页**而不是继续缩字号：多一页只是多翻一次，字号太小则是全班都看不清。
+# 12pt 只留作单条超长、拆无可拆时的兜底。
+BODY_TARGET_SIZE = 14.0
+BODY_MIN_SIZE = 12.0
+# 页眉（课程名）与页码的字号：投影场景的可读下限，9pt 在教室后排等于没有
+CHROME_FONT_SIZE = 11.0
+# 估算用的行高与每行宽度系数：实际渲染行距是 1.18、字宽满打满算，
+# 估算时留出余量（见 _fit_body_size），否则最后一行会压到内容框边框上。
+BODY_LINE_SPACING = 1.32
+BODY_WIDTH_SAFETY = 0.92
+BODY_SPACE_AFTER = 14.0
+# 这些版式把要点交给标准正文框渲染，能用"高度"估出该不该拆页；
+# 卡片/流程/对比等版式各有自己的排布与容量，不适用同一套估算。
+HEIGHT_AWARE_LAYOUTS = {"bullets", "agenda", "summary"}
 
-# ── 视觉系统 ────────────────────────────────────────────
-# 幻灯片从空白版式逐块绘制，所以颜色必须显式给出：主题色会随打开它的模板
-# 变化，课程的主色不该被别人的模板改掉。
+# ── 视觉系统：全部取自主题层（slide_theme.py） ───────────────
+#
+# 幻灯片从空白版式逐块绘制，颜色必须显式给出：主题色会随打开它的模板变化，
+# 课程的主色不该被别人的模板改掉。
+#
+# 这些名字保持不变（各处绘制照旧引用），但取值改由主题决定 —— 换主题只改
+# slide_theme.py 一处；前端 tokens.css 的 --slide-* 与主题字段一一对应。
 SLIDE_FONT = "Microsoft YaHei"
-COLOR_INK = "0F172A"
-COLOR_MUTED = "64748B"
-COLOR_PRIMARY = "1463FF"
-COLOR_ACCENT = "C2410C"
-COLOR_SURFACE = "EEF4FF"
-COLOR_LINE = "D3E0F5"
-COLOR_PANEL = "F5F8FF"
-COLOR_BAND = "0B3FA8"
-COLOR_ON_BAND = "FFFFFF"
+_THEME = DEFAULT_THEME
+COLOR_INK = _THEME.ink
+COLOR_MUTED = _THEME.muted
+COLOR_PRIMARY = _THEME.primary               # 主蓝：色条、编号、强调
+COLOR_PRIMARY_LIGHT = _THEME.primary_light   # 浅一档：封面水印、次级图形
+COLOR_PRIMARY_DARK = _THEME.primary_dark     # 深一档：浅底上的文字
+COLOR_ACCENT = _THEME.accent                 # 暖色（配浅底用）
+COLOR_SURFACE = _THEME.tint                  # 极浅蓝：徽标/标签底
+COLOR_LINE = _THEME.line                     # 细边框
+COLOR_PANEL = _THEME.surface                 # 内容区浅灰底
+COLOR_BAND = _THEME.primary_dark             # 深一档的蓝：色带/强调块
+COLOR_ON_BAND = _THEME.on_primary
+COLOR_ON_PRIMARY = _THEME.on_primary         # 压在主蓝上的文字（封面白字）
+# 装饰与图形的派生色：全部取自主题，不再手写十六进制值
+COLOR_WARM = _THEME.warm                     # 暖色块（对比右栏、渐变的一半）
+COLOR_DECOR = _THEME.tint                    # 封面装饰块
+COLOR_DECOR_WARM = _THEME.warm_soft          # 暖色装饰圆
+COLOR_TRACK = _THEME.block                   # 进度条底槽
+# 参考课件的构图：顶部粗色条 + 右上角大号章节标题 + 浅灰内容区 + 三栏页脚
+HEADER_BAR_IN = _THEME.header_bar_height
+HEADER_BAR_WIDTH_IN = _THEME.header_bar_width
+HEADER_TITLE_TOP_IN = _THEME.title_top
 
 DEFAULT_LAYOUT = "bullets"
+# 一页正文的可读密度上限。
+#
+# 生成端已经不限制每页条数（写得多不再被判失败），渲染端必须承接"这一页装不下"：
+# 超出容量的条目会拆成"（续）"页继续投影。以前这里是隐式的——超出 max_bullets 的
+# 条目被直接丢弃，教师看到的是"我写了 12 条，导出只剩 5 条"。
+SLIDE_BULLET_CAPACITY = 8
+# 目录页是结构总览，一行一项，按内容区高度最多排下这些行。
+AGENDA_ROW_CAPACITY = 6
 # 封面要点区（英寸）：右栏副标题下方到页面下边距之间的空白带。
 # 封面要克制，但绝不能像以前那样把要点整段丢掉——用户在成果编辑里
 # "丰富第一页"新增的要点必须能出现在导出件上；余量不足时按字号估算，
@@ -249,6 +307,18 @@ def _add_block(slide, left, top, width, height, fill: str, *, oval: bool = False
     return shape
 
 
+def _send_to_back(shape) -> None:
+    """把形状移到最底层。
+
+    python-pptx 按添加顺序叠放，而各版式都是"先写标题、再画面板"，标题一旦落在
+    面板范围内就会被面板盖住。改绘制顺序要动所有版式，把面板压到底层只需动一处。
+    """
+    tree = shape._element.getparent()
+    tree.remove(shape._element)
+    # 索引 2：跳过 nvGrpSpPr 与 grpSpPr，插到所有图形之前
+    tree.insert(2, shape._element)
+
+
 def _add_panel(
     slide,
     box: tuple[float, float, float, float],
@@ -256,24 +326,22 @@ def _add_panel(
     fill: str = COLOR_SURFACE,
     line: str | None = COLOR_LINE,
 ):
-    """A rounded panel. Content sits in a container instead of floating on white,
-    which is most of the difference between a document and a slide."""
+    """内容框：平面浅灰底 + 细边框。
+
+    参考课件用的是"整块浅灰平面 + 1px 细边框"（文档式分区），而不是圆角卡片；
+    圆角卡片看久了像网页组件，平面分区更像讲义页面。
+    """
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
     left, top, width, height = box
     shape = slide.shapes.add_shape(
-        MSO_SHAPE.ROUNDED_RECTANGLE,
+        MSO_SHAPE.RECTANGLE,
         Inches(left),
         Inches(top),
         Inches(width),
         Inches(height),
     )
-    try:
-        # 圆角半径按短边比例，避免大面板出现夸张的圆角
-        shape.adjustments[0] = 0.045
-    except Exception:
-        pass
     if line is None:
         shape.line.fill.background()
     else:
@@ -285,6 +353,8 @@ def _add_panel(
         shape.shadow.inherit = False
     except Exception:
         pass
+    # 压到底层：面板只是底板，绝不能盖住标题或正文
+    _send_to_back(shape)
     return shape
 
 
@@ -305,7 +375,7 @@ def _add_lead_in(slide, text: str) -> None:
         Inches(11.35),
         Inches(LEAD_HEIGHT_IN),
         strip_emphasis(text),
-        font_size=12,
+        font_size=_lead_size(text, width_in=11.35, height_in=LEAD_HEIGHT_IN),
         color=COLOR_MUTED,
     )
 
@@ -349,33 +419,133 @@ def _slide_layout(spec: dict, index: int, total: int) -> str:
     return DEFAULT_LAYOUT
 
 
-def _add_chrome(slide, plan_title: str, number: int, total: int) -> None:
-    """Brand bar, running title and page number shared by every content page."""
+def _decorate_slide(slide, layout: str) -> None:
+    """程序化图形层：没有上传素材时，页面也要有视觉。
+
+    全部用形状画（圆形、色条、三角），不依赖任何图片文件。装饰必须在文字
+    之前绘制——python-pptx 后加的形状在上层，先画才不会盖住正文。
+
+    以前每页都是"标题 + 一个浅底面板 + 一列圆点"，整册一个样，这就是
+    "没有图形、没有设计感"的直接来源。
+    """
+    from pptx.dml.color import RGBColor
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.util import Inches
+
+    def shape(kind, left: float, top: float, width: float, height: float, color: str):
+        item = slide.shapes.add_shape(
+            kind, Inches(left), Inches(top), Inches(width), Inches(height)
+        )
+        item.fill.solid()
+        item.fill.fore_color.rgb = RGBColor.from_string(color)
+        item.line.fill.background()
+        item.shadow.inherit = False
+        return item
+
+    if layout == "cover":
+        # 右上角叠放的几何圆组 + 左下暖色点：封面不再是"空白页 + 大字"
+        shape(MSO_SHAPE.OVAL, 9.95, 0.30, 1.60, 1.60, COLOR_DECOR)
+        shape(MSO_SHAPE.OVAL, 11.15, 1.35, 1.05, 1.05, COLOR_DECOR_WARM)
+        shape(MSO_SHAPE.OVAL, 10.55, 2.55, 0.62, 0.62, COLOR_DECOR)
+        shape(MSO_SHAPE.OVAL, 0.50, 6.05, 0.40, 0.40, COLOR_DECOR_WARM)
+    elif layout == "section":
+        # 右侧斜切色块：章节页的底色分区，与正文页一眼可分
+        shape(MSO_SHAPE.RIGHT_TRIANGLE, 9.10, 0, SLIDE_WIDTH_IN - 9.10, SLIDE_HEIGHT_IN, COLOR_DECOR)
+    elif layout in ("bullets", "agenda", "summary", "steps"):
+        # 正文页：内容区左侧主色细竖条 + 页脚色条，打破"一大块浅底"
+        shape(
+            MSO_SHAPE.RECTANGLE,
+            CONTENT_LEFT_IN,
+            CONTENT_TOP_IN + 0.16,
+            0.05,
+            CONTENT_HEIGHT_IN - 0.32,
+            COLOR_PRIMARY,
+        )
+        shape(MSO_SHAPE.RECTANGLE, 0, SLIDE_HEIGHT_IN - 0.06, SLIDE_WIDTH_IN, 0.06, COLOR_PRIMARY)
+    elif layout == "compare":
+        # 对比页：左右两栏顶部各一道色条（冷暖对照），视觉上先分清两派
+        shape(MSO_SHAPE.RECTANGLE, CONTENT_LEFT_IN, CONTENT_TOP_IN - 0.10, 5.28, 0.05, COLOR_PRIMARY)
+        shape(MSO_SHAPE.RECTANGLE, 6.55, CONTENT_TOP_IN - 0.10, 5.28, 0.05, COLOR_WARM)
+    elif layout == "metric":
+        # 度量页：为数值条铺一条底槽（数值条本身在 _render_metric 里按值画）
+        shape(MSO_SHAPE.RECTANGLE, CONTENT_LEFT_IN, 6.46, 11.30, 0.10, COLOR_TRACK)
+
+
+def _short_title(text: str, limit: int = 12) -> str:
+    """页眉/页脚用的短课程名。
+
+    蓝图标题往往是"理解浮力的产生原因与阿基米德原理，能判断物体的浮沉条件…"
+    这种长句，放进页眉会换行三行、把标题挤走。取第一个分句并截断，页眉才是
+    "标签"而不是第二行正文。
+    """
+    head = re.split(r"[：:，,。；;、（(]", str(text or "").strip())[0].strip()
+    if len(head) > limit:
+        # 截断要看得出来：直接切齐会像被裁掉的错字
+        head = head[: limit - 1] + "…"
+    return head
+
+
+def _add_header_band(slide, course_name: str) -> None:
+    """顶部粗色条 + 右上角短课程名（参考课件的页眉体系）。
+
+    以前是"左上角小字标题 + 顶部细线"，页眉几乎看不见；参考课件把课程名放在
+    右上角、左侧配一道粗色条 —— 投影时一眼就知道在讲哪门课。
+    名字必须短（见 `_short_title`），否则会换行成第二段正文、把页面标题挤走。
+    """
     from pptx.enum.text import PP_ALIGN
     from pptx.util import Inches
 
-    _add_block(slide, 0, 0, SLIDE_WIDTH_IN, 0.085, COLOR_PRIMARY)
+    # 只占左侧约 60%，右侧留给课程名，形成参考图那种"条 + 名"的横带
+    _add_block(slide, CONTENT_LEFT_IN, 0.30, HEADER_BAR_WIDTH_IN, HEADER_BAR_IN, COLOR_PRIMARY)
+    label = _short_title(course_name)
+    if not label:
+        return
+    _add_textbox(
+        slide,
+        Inches(CONTENT_LEFT_IN + HEADER_BAR_WIDTH_IN + 0.35),
+        Inches(HEADER_TITLE_TOP_IN),
+        Inches(SLIDE_WIDTH_IN - CONTENT_LEFT_IN - (CONTENT_LEFT_IN + HEADER_BAR_WIDTH_IN + 0.35)),
+        Inches(0.48),
+        label,
+        font_size=20,
+        bold=True,
+        color=COLOR_PRIMARY,
+        align=PP_ALIGN.RIGHT,
+    )
+
+
+def _add_footer(slide, course_name: str, number: int, total: int) -> None:
+    """三栏页脚：左《课程名》· 中页码 ·（右侧留空，避免造假品牌）。"""
+    from pptx.enum.text import PP_ALIGN
+    from pptx.util import Inches
+
     _add_textbox(
         slide,
         Inches(CONTENT_LEFT_IN),
         Inches(FOOTER_TOP_IN),
-        Inches(8.4),
-        Inches(0.28),
-        plan_title,
-        font_size=9,
+        Inches(7.4),
+        Inches(0.34),
+        f"《{_short_title(course_name, 20)}》" if course_name else "",
+        font_size=CHROME_FONT_SIZE,
         color=COLOR_MUTED,
     )
     _add_textbox(
         slide,
-        Inches(11.35),
+        Inches(5.6),
         Inches(FOOTER_TOP_IN),
-        Inches(1.35),
-        Inches(0.28),
-        f"{number} / {total}",
-        font_size=9,
+        Inches(2.2),
+        Inches(0.34),
+        f"- {number}/{total}页 -",
+        font_size=CHROME_FONT_SIZE,
         color=COLOR_MUTED,
-        align=PP_ALIGN.RIGHT,
+        align=PP_ALIGN.CENTER,
     )
+
+
+def _add_chrome(slide, course_name: str, number: int, total: int) -> None:
+    """内容页的完整页眉页脚：色条 + 课程名 + 三栏页脚。"""
+    _add_header_band(slide, course_name)
+    _add_footer(slide, course_name, number, total)
 
 
 def _add_sources(slide, refs: list) -> None:
@@ -400,14 +570,44 @@ def _add_sources(slide, refs: list) -> None:
     )
 
 
+def _title_size(text: str, *, width_in: float, height_in: float) -> float:
+    """标题字号自适应：先按 29pt 试，放不进标题框就逐级下调。
+
+    以前标题固定 29pt，长标题换行后会顶到导语与正文面板上 —— "字重叠"就是这么来的。
+    python-pptx 没有文本测量 API，所以按"一个全角字≈一个字号宽"保守估算。
+    """
+    available = height_in * 72
+    for size in (29.0, 26.0, 23.0, 20.0, 18.0):
+        chars_per_line = max(8, int(width_in * 72 / size))
+        lines = max(1, ceil(len(str(text)) / chars_per_line))
+        if lines * size * 1.25 <= available:
+            return size
+    return 18.0
+
+
+def _lead_size(text: str, *, width_in: float, height_in: float) -> float:
+    """导语同样自适应：避免换行后压到正文面板。"""
+    available = height_in * 72
+    for size in (14.0, 13.0, 12.0):
+        chars_per_line = max(8, int(width_in * 72 / size))
+        lines = max(1, ceil(len(str(text)) / chars_per_line))
+        if lines * size * 1.2 <= available:
+            return size
+    return 12.0
+
+
 def _add_slide_title(slide, title: str, *, size: float = 29) -> float:
     """Fill the layout's title placeholder and draw its accent rule.
 
     Returns the y the body may start at.
     """
+    from pptx.enum.text import PP_ALIGN
+
+    fitted = _title_size(title, width_in=CONTENT_WIDTH_IN, height_in=TITLE_HEIGHT_IN)
     placeholder = slide.shapes.title
     if placeholder is not None:
-        _fill_placeholder(placeholder, title, size=size, bold=True)
+        # 左对齐：版式的标题占位符默认居中，居中标题配左对齐正文会散架
+        _fill_placeholder(placeholder, title, size=fitted, bold=True, align=PP_ALIGN.LEFT)
     rule_top = TITLE_TOP_IN + TITLE_HEIGHT_IN - 0.07
     _add_block(slide, CONTENT_LEFT_IN, rule_top, 1.15, 0.055, COLOR_PRIMARY)
     return rule_top + 0.36
@@ -629,9 +829,10 @@ THEME_COLORS = {
 # 每个版式里占位符的 16:9 栅格。改的是版式定义本身，所以之后新建的每一页都自动
 # 合规，在 PowerPoint 里执行"重设版式"也会回到这些位置。
 LAYOUT_GRID: dict[str, dict[str, tuple[float, float, float, float]]] = {
+    # 封面：整版主蓝 + 白字居中（参考课件构图）
     "Title Slide": {
-        "CENTER_TITLE": (5.15, 2.30, 7.45, 1.85),
-        "SUBTITLE": (5.15, 4.52, 7.45, 1.20),
+        "CENTER_TITLE": (1.20, 2.55, 10.93, 1.20),
+        "SUBTITLE": (1.20, 3.80, 10.93, 0.85),
     },
     "Title and Content": {
         "TITLE": (CONTENT_LEFT_IN, TITLE_TOP_IN, CONTENT_WIDTH_IN, TITLE_HEIGHT_IN),
@@ -892,12 +1093,18 @@ def _fill_body(slide, bullets: list, *, size: float = 20) -> bool:
 
 
 def _cover_bullet_style(count: int) -> tuple[float, float]:
-    """封面要点字号自适应：条目越多，字号与段后距越紧，尽量把要点留在封面上。"""
+    """封面要点字号自适应：条目越多，字号与段后距越紧，尽量把要点留在封面上。
+
+    封面要点是"授课对象/课时/目标"这类要投影给全班的元信息，所以整体比正文下限
+    再高一点（15/14/13），只有条目很多时才收紧到 12。
+    """
     if count <= 3:
-        return 13.0, 14.0
+        return 15.0, 14.0
     if count == 4:
-        return 12.0, 9.0
-    return 11.0, 5.0
+        return 14.0, 10.0
+    if count == 5:
+        return 13.0, 8.0
+    return 12.0, 5.0
 
 
 def _fit_cover_bullets(bullets: list, *, size: float, space_after: float) -> tuple[list, list]:
@@ -920,7 +1127,14 @@ def _fit_cover_bullets(bullets: list, *, size: float, space_after: float) -> tup
     return visible, []
 
 
-def _render_cover(slide, spec, plan: dict, picture: dict, source_bullets: list) -> list:
+def _render_cover(
+    slide,
+    spec,
+    plan: dict,
+    picture: dict,
+    source_bullets: list,
+    total: int = 1,
+) -> list:
     """Title slide: a colour band on the left, title and subtitle on the right.
 
     A background picture is the one placement that makes sense here, so it is
@@ -931,6 +1145,7 @@ def _render_cover(slide, spec, plan: dict, picture: dict, source_bullets: list) 
     enriched the first page was rendered nowhere and looked like "the export
     ignored my revision".
     """
+    from pptx.enum.text import PP_ALIGN
     from pptx.util import Inches
 
     if picture["path"] is not None:
@@ -955,25 +1170,37 @@ def _render_cover(slide, spec, plan: dict, picture: dict, source_bullets: list) 
             # 图片下半部分透出来。
             _add_scrim(slide, top=0.90, mid=0.82, bottom=0.34)
 
-    _add_block(slide, 0, 0, 4.55, SLIDE_HEIGHT_IN, COLOR_BAND)
-    _add_block(slide, 4.55, 0, 0.07, SLIDE_HEIGHT_IN, COLOR_PRIMARY)
+    if picture["path"] is not None and str(picture.get("placement") or "") == "right":
+        # 右侧配图时左半页仍是整版主蓝，保证白字可读
+        _add_block(slide, 0, 0, COVER_IMAGE_LEFT_IN, COVER_BAND_HEIGHT_IN, COLOR_PRIMARY)
+    else:
+        _add_block(slide, 0, 0, SLIDE_WIDTH_IN, COVER_BAND_HEIGHT_IN, COLOR_PRIMARY)
 
-    meta = [str(plan.get("target_audience") or "").strip()]
-    minutes = plan.get("duration_minutes")
-    if minutes:
-        meta.append(f"{minutes} 分钟")
-    meta = [line for line in meta if line]
-    if meta:
+    # 右下角浅蓝大圆 + 左下角水印课程名：参考课件的封面靠这两样东西撑住"分量"，
+    # 而不是靠更多文字。
+    _add_block(
+        slide,
+        SLIDE_WIDTH_IN - 3.4,
+        COVER_BAND_HEIGHT_IN - 3.2,
+        4.6,
+        4.6,
+        COLOR_PRIMARY_LIGHT,
+        oval=True,
+    )
+    # 水印只放短名、单行、靠右下：整句课名当水印会跨三行，把信息行与页脚一起压住
+    watermark = _short_title(_plan_title(plan), 8)
+    if watermark:
         _add_textbox(
             slide,
-            Inches(0.75),
-            Inches(3.05),
-            Inches(3.3),
-            Inches(1.4),
-            "\n".join(meta),
-            font_size=13,
-            color=COLOR_ON_BAND,
-            line_spacing=1.6,
+            Inches(7.20),
+            Inches(5.10),
+            Inches(5.50),
+            Inches(0.95),
+            watermark,
+            font_size=40,
+            bold=True,
+            color=COLOR_PRIMARY_LIGHT,
+            align=PP_ALIGN.RIGHT,
         )
 
     title = slide.shapes.title
@@ -981,36 +1208,44 @@ def _render_cover(slide, spec, plan: dict, picture: dict, source_bullets: list) 
         _fill_placeholder(
             title,
             str(spec.get("title") or _plan_title(plan)),
-            size=38,
+            size=40,
             bold=True,
-            color=COLOR_INK,
+            color=COLOR_ON_PRIMARY,
             line_spacing=1.15,
         )
-    _add_block(slide, 5.15, 4.26, 1.3, 0.06, COLOR_PRIMARY)
+
+    # 副标题：课程的定位/目标，白字居中，压在标题下方
     subtitle = str(spec.get("purpose") or plan.get("teaching_goal") or "").strip()
     if subtitle:
         placeholder = _body_placeholder(slide)
         if placeholder is not None:
             _fill_placeholder(
-                placeholder, subtitle, size=15, color=COLOR_MUTED, line_spacing=1.35
+                placeholder, subtitle, size=16, color=COLOR_ON_PRIMARY, line_spacing=1.35
             )
 
-    # 封面要点：与正文同一套渲染（彩色圆点 + **强调**解析），字号随条数自适应；
-    # 真的放不下的条目由调用方并入讲稿。
-    bullets = [str(item).strip() for item in source_bullets if str(item).strip()]
-    if not bullets:
-        return []
-    size, space_after = _cover_bullet_style(len(bullets))
-    visible, hidden = _fit_cover_bullets(bullets, size=size, space_after=space_after)
-    if visible:
-        box = slide.shapes.add_textbox(
-            Inches(COVER_BULLET_LEFT_IN),
-            Inches(COVER_BULLET_TOP_IN),
-            Inches(COVER_BULLET_WIDTH_IN),
-            Inches(COVER_BULLET_BOTTOM_IN - COVER_BULLET_TOP_IN),
+    # 信息行：授课对象 · 课时 · 封面要点（放得下的部分），白字居中；
+    # 装不下的条目仍由调用方并入讲稿，内容不会丢。
+    meta = [str(plan.get("target_audience") or "").strip()]
+    minutes = plan.get("duration_minutes")
+    if minutes:
+        meta.append(f"{minutes} 分钟")
+    meta_line = " · ".join(line for line in meta if line)
+    if meta_line:
+        _add_textbox(
+            slide,
+            Inches(1.20),
+            Inches(4.78),
+            Inches(10.93),
+            Inches(0.50),
+            meta_line,
+            font_size=16,
+            color=COLOR_ON_PRIMARY,
+            align=PP_ALIGN.CENTER,
         )
-        _fill_bullet_frame(box.text_frame, visible, size=size, space_after=space_after)
-    return hidden
+    _add_footer(slide, _plan_title(plan), 1, total)
+    # 封面要点不铺在封面上：参考课件的封面只有标题与信息行。
+    # 条目全部并入讲稿，内容一条不丢。
+    return [str(item) for item in source_bullets if str(item).strip()]
 
 
 def _render_section(slide, spec, picture: dict) -> None:
@@ -1042,27 +1277,65 @@ def _render_section(slide, spec, picture: dict) -> None:
             _fill_placeholder(placeholder, purpose, size=14, color=COLOR_MUTED)
 
 
-def _render_agenda(slide, spec, items: list) -> None:
-    """Numbered overview page: placeholder title, drawn badges for the items."""
+def _render_agenda(slide, spec, items: list) -> list:
+    """Numbered overview page: placeholder title, drawn badges for the items.
+
+    Returns the items the page could not show so the caller can keep them in the
+    speaker notes. 目录页一行一项，排不下必须说出来：静默丢掉会让教师以为
+    "模型没写"，其实是版式装不下。
+    """
+    from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
     _drop_body_placeholder(slide)
     _add_slide_title(slide, str(spec.get("title") or "本课结构"))
     _add_lead_in(slide, str(spec.get("purpose") or ""))
-    for position, item in enumerate(items[:6], start=1):
-        row_top = CONTENT_TOP_IN + (position - 1) * 0.63
-        badge = _add_block(slide, CONTENT_LEFT_IN, row_top, 0.4, 0.4, COLOR_PRIMARY, oval=True)
-        _set_shape_text(badge, str(position), size=13, bold=True, color=COLOR_ON_BAND)
+    rows, dropped = _layout_capacity(
+        [str(item) for item in items if str(item).strip()], AGENDA_ROW_CAPACITY
+    )
+    if not rows:
+        return dropped
+
+    # 参考课件的目录页：灰色"书签"块（右端带尖角）里放大号蓝色数字，右侧接条目名。
+    # 这是整份模板最有辨识度的一处，原先的圆形小徽标没有这种版式感。
+    _add_panel(slide, PANEL_BOXES["full"])
+    block_width = 1.30
+    block_height = 0.70
+    # 整组水平居中：块 + 间隙 + 条目名，左右留白对称才像一页设计过的目录
+    group_width = 5.60
+    group_left = (SLIDE_WIDTH_IN - group_width) / 2 - 0.60
+    name_left = group_left + block_width + 0.40
+    name_width = group_left + group_width - name_left
+    # 从导语下方开始：以前从内容区顶部算，第一块会压在导语上
+    top_limit = LEAD_TOP_IN + LEAD_HEIGHT_IN + 0.30
+    bottom_limit = CONTENT_TOP_IN + CONTENT_HEIGHT_IN - 0.25
+    gap = min(0.98, (bottom_limit - top_limit) / len(rows))
+    start_top = top_limit + ((bottom_limit - top_limit) - gap * len(rows)) / 2
+
+    for position, item in enumerate(rows, start=1):
+        row_top = start_top + (position - 1) * gap
+        block = _add_block(
+            slide,
+            group_left,
+            row_top,
+            block_width,
+            block_height,
+            COLOR_TRACK,  # 比内容区浅灰深一档，块才"浮"得出来
+            kind=MSO_SHAPE.PENTAGON,
+        )
+        _set_shape_text(block, str(position), size=26, bold=True, color=COLOR_PRIMARY)
         _add_textbox(
             slide,
-            Inches(CONTENT_LEFT_IN + 0.64),
-            Inches(row_top + 0.04),
-            Inches(CONTENT_WIDTH_IN - 0.7),
-            Inches(0.42),
+            Inches(name_left),
+            Inches(row_top + 0.06),
+            Inches(name_width),
+            Inches(0.58),
             str(item),
-            font_size=18,
-            color=COLOR_INK,
+            font_size=24,
+            bold=True,
+            color=COLOR_PRIMARY,
         )
+    return dropped
 
 
 def _render_summary(slide, spec, bullets: list) -> None:
@@ -1076,8 +1349,11 @@ def _render_summary(slide, spec, bullets: list) -> None:
             title, str(spec.get("title") or "本课小结"), size=28, bold=True, color=COLOR_BAND
         )
     _add_lead_in(slide, str(spec.get("purpose") or ""))
-    if not _fill_body(slide, bullets, size=18):
-        _add_bullets(slide, bullets, TEXT_BOXES["full"], size=18)
+    box = TEXT_BOXES["full"]
+    # 小结页同样按内容量取字号：要点里出现"整节课的收束"时往往比普通页更长。
+    size = _fit_body_size(bullets, width_in=box[2], height_in=box[3], base=18.0)
+    if not _fill_body(slide, bullets, size=size):
+        _add_bullets(slide, bullets, box, size=size)
 
 
 def _add_emphasis_text(
@@ -1201,9 +1477,9 @@ def _split_card_label(text: str) -> tuple[str, str]:
 def _layout_capacity(entries: list, limit: int) -> tuple[list, list]:
     """按版面容量切分：装得下的与装不下的。
 
-    新版式各有明确上限（卡片 4 张、流程 4 段、度量 3 块），而要点上限由
-    `max_bullets_per_slide` 决定（可到 8 条）。超出的条目绝不能静默丢掉，
-    调用方会把它们并入讲稿。
+    这些版式各有形状上的硬上限（卡片 4 张、流程 4 段、度量 3 块），与"模型写了多少
+    条"无关。装不下的条目绝不能静默丢掉：调用方会把它们并入讲稿，讲稿里看得见，
+    教师也才知道是版式限制而不是内容缺失。
     """
     return entries[:limit], entries[limit:]
 
@@ -1214,6 +1490,151 @@ def _overflow_note(notes: str, items: list) -> str:
     if not lines:
         return notes
     return f"本页版面容纳不下以下条目，已保留在讲稿中：\n{lines}\n\n{notes}".rstrip()
+
+
+def _expand_slides(slides: list[dict], capacity: int) -> list[dict]:
+    """把要点超过一页容量的幻灯片拆成"首页 + 续页"。
+
+    生成端已经不限制每页条数，渲染端如果仍按 max_bullets 截断，教师看到的就是
+    "我写了 12 条，导出只剩 5 条"。这里改成分页：每页保持可投影的密度，多出来的
+    条目成为续页继续上屏，顺序与语义都不变。
+    """
+    if capacity < 1:
+        return list(slides)
+    expanded: list[dict] = []
+    for spec in slides:
+        bullets = [str(item) for item in (spec.get("bullets") or [])]
+        layout = str(spec.get("layout") or DEFAULT_LAYOUT)
+        # 封面与章节页不拆：它们的多余条目本来就并进讲稿；拆出来的"课名（续 1）"
+        # 会变成一页没有标题意义的内容页，看起来像重复生成。
+        if len(bullets) <= capacity or layout in {"cover", "section"}:
+            expanded.append(spec)
+            continue
+        title = str(spec.get("title") or "教学内容")
+        for position, start in enumerate(range(0, len(bullets), capacity)):
+            clone = dict(spec)
+            clone["bullets"] = bullets[start : start + capacity]
+            if position:
+                # 续页一律退回标准讲解版式：封面、目录、小结、章节页在第二页没有
+                # 意义；配图也只跟随首页，否则同一张图会在每一页重复铺满。
+                clone["layout"] = DEFAULT_LAYOUT
+                clone["title"] = f"{title}（续 {position}）"
+                clone["image"] = None
+            expanded.append(clone)
+    return expanded
+
+
+def _bullet_height(bullet: str, *, size: float, width_in: float) -> float:
+    """一条要点在目标字号下占的高度（与 _fit_body_size 用同一套估算口径）。"""
+    chars_per_line = max(8, int(width_in * 72 / size * BODY_WIDTH_SAFETY))
+    lines = max(1, ceil(len(str(bullet)) / chars_per_line))
+    return lines * size * BODY_LINE_SPACING + BODY_SPACE_AFTER
+
+
+def _split_pages_by_height(slides: list[dict], images: dict | None = None) -> list[dict]:
+    """按"目标字号下的实际高度"再拆一次页。
+
+    条目数没超上限、但单条很长时，渲染端只能一路缩字号（实测出现过整页 12pt）。
+    这里先把这类页面拆开，让正文尽量停在 BODY_TARGET_SIZE：
+    多一页只是多翻一次，字号太小则是全班都看不清。
+    """
+    expanded: list[dict] = []
+    for spec in slides:
+        layout = str(spec.get("layout") or DEFAULT_LAYOUT)
+        bullets = [str(item) for item in (spec.get("bullets") or [])]
+        if layout not in HEIGHT_AWARE_LAYOUTS or len(bullets) <= 1:
+            expanded.append(spec)
+            continue
+        # 只有"真的有图"的页正文框才更窄（与 render 端同一判断），
+        # 否则会把没有图的页也按窄框拆，白白多出续页。
+        image_spec = spec.get("image") or {}
+        has_image = (images or {}).get(str(image_spec.get("material_id") or "")) is not None
+        box = TEXT_BOXES["right"] if has_image else TEXT_BOXES["full"]
+        available = box[3] * 72
+        heights = [
+            _bullet_height(bullet, size=BODY_TARGET_SIZE, width_in=box[2]) for bullet in bullets
+        ]
+        # 需要几页：按总高度算
+        pages_needed = max(1, ceil(sum(heights) / available))
+        # 均衡分配：贪心填满会让最后—页只剩一条，整页几乎空白。
+        # 这里让每页至少分到 total/pages 条，再受可用高度约束。
+        per_page = len(bullets) / pages_needed
+        chunks: list[list[str]] = []
+        current: list[str] = []
+        used = 0.0
+        for bullet, height in zip(bullets, heights):
+            if current and (used + height > available or len(current) >= ceil(per_page)):
+                chunks.append(current)
+                current, used = [], 0.0
+            current.append(bullet)
+            used += height
+        chunks.append(current)
+        if len(chunks) == 1:
+            expanded.append(spec)
+            continue
+        title = str(spec.get("title") or "教学内容")
+        for position, chunk in enumerate(chunks):
+            clone = dict(spec)
+            clone["bullets"] = chunk
+            if position:
+                # 续页退回标准讲解版式，并让配图只跟随首页（同 _expand_slides）
+                clone["layout"] = DEFAULT_LAYOUT
+                clone["title"] = f"{title}（续 {position}）"
+                clone["image"] = None
+            expanded.append(clone)
+    return expanded
+
+
+def _center_if_sparse(
+    frame,
+    bullets: list,
+    *,
+    size: float,
+    width_in: float,
+    height_in: float,
+) -> None:
+    """内容明显少于框高时垂直居中。
+
+    拆页之后会出现"一页只剩一条要点"的情况，文字顶在框顶、下方一片空白，
+    看起来像漏了内容。居中能让稀疏页也成立。
+    """
+    from pptx.enum.text import MSO_ANCHOR
+
+    used = sum(
+        _bullet_height(str(bullet), size=size, width_in=width_in) for bullet in bullets
+    )
+    if used < height_in * 72 * 0.6:
+        frame.vertical_anchor = MSO_ANCHOR.MIDDLE
+
+
+def _fit_body_size(
+    bullets: list,
+    *,
+    width_in: float,
+    height_in: float,
+    base: float = 20.0,
+    minimum: float = BODY_MIN_SIZE,
+    space_after: float = 14.0,
+) -> float:
+    """按内容量估一个能排进正文框的字号。
+
+    python-pptx 没有文本测量 API，只能估算。实测按"一个全角字=一个字号宽、行高
+    1.18"估会偏乐观：中文禁则处理、项目符号前缀、中英混排都会让实际行数多出
+    约一成，结果最后一行压在内容框边框上。所以这里留两道保险——
+    每行按 92% 宽度算、行高按 1.32 算 —— 宁可字号小一点，也不要溢出。
+    """
+    available = height_in * 72
+    size = base
+    while size > minimum:
+        chars_per_line = max(8, int(width_in * 72 / size * BODY_WIDTH_SAFETY))
+        used = 0.0
+        for bullet in bullets:
+            lines = max(1, ceil(len(str(bullet)) / chars_per_line))
+            used += lines * size * BODY_LINE_SPACING + space_after
+        if used <= available:
+            return size
+        size -= 1.0
+    return minimum
 
 
 def _render_cards(slide, spec, bullets: list) -> list:
@@ -1311,6 +1732,20 @@ def _render_flow(slide, spec, bullets: list) -> list:
     return dropped
 
 
+def _metric_reference(entries: list) -> float:
+    """数值条的参照上限：取本页最大数字，画出来才与同页其他数字可比。"""
+    reference = 0.0
+    for entry in entries:
+        match = METRIC_PATTERN.match(str(entry).strip())
+        if not match:
+            continue
+        try:
+            reference = max(reference, float(match.group(1).replace(",", "")))
+        except ValueError:
+            continue
+    return reference or 1.0
+
+
 def _render_metric(slide, spec, bullets: list) -> list:
     """数据度量页：值得放大的数字单独成为视觉主体。
 
@@ -1368,6 +1803,17 @@ def _render_metric(slide, spec, bullets: list) -> list:
             size=14,
             color=COLOR_MUTED,
         )
+        # 数值条：把数字变成"看得见的量"。以本页最大值为满槽，
+        # 度量页因此不只是一排大数字，还有一层图形。
+        try:
+            value = float(figure.replace(",", ""))
+        except ValueError:
+            continue
+        if value <= 0:
+            continue
+        bar_width = 11.30 / max(count, 1) - 0.24
+        bar_left = CONTENT_LEFT_IN + position * (11.30 / max(count, 1)) + 0.12
+        _add_block(slide, bar_left, 6.46, bar_width * min(value / _metric_reference(entries), 1.0), 0.10, COLOR_PRIMARY)
     return dropped
 
 
@@ -1504,6 +1950,8 @@ def _render_body(slide, spec, bullets: list, picture: dict) -> bool:
     # 满版页把整页交给图片，要点就叠在渐变蒙层上（全宽文本框）；图片缺失时
     # embedded 为 False，仍按常规要点版式渲染，避免内容凭空消失。
     left, top, width, height = TEXT_BOXES[placement]
+    # 密度放开之后字号必须跟着内容量走：固定 20pt 装 8 条要点会直接压出页面之外。
+    body_size = _fit_body_size(bullets, width_in=width, height_in=height)
     body = _body_placeholder(slide)
     if body is not None:
         # 满版页已有渐变蒙层当底，再叠一层面板会把图片糊掉。
@@ -1513,11 +1961,16 @@ def _render_body(slide, spec, bullets: list, picture: dict) -> bool:
         # 版式层面无从预知，只能改这一页的占位符几何。
         body.left, body.top = Inches(left), Inches(top)
         body.width, body.height = Inches(width), Inches(height)
-        _fill_bullet_frame(body.text_frame, bullets)
+        _fill_bullet_frame(body.text_frame, bullets, size=body_size)
+        _center_if_sparse(
+            body.text_frame, bullets, size=body_size, width_in=width, height_in=height
+        )
     else:
         if not full_bleed:
             _add_panel(slide, PANEL_BOXES[placement])
-        _add_bullets(slide, bullets, (left, max(top, body_top), width, height))
+        _add_bullets(
+            slide, bullets, (left, max(top, body_top), width, height), size=body_size
+        )
     return background_embedded
 
 
@@ -1549,12 +2002,20 @@ def generate_pptx(
     _configure_deck(prs)
     slides = _slides(plan)
     pptx_spec = (plan.get("output_specs") or {}).get("pptx") or {}
-    max_bullets = int(pptx_spec.get("max_bullets_per_slide") or 5)
+    # 每页密度取"声明值"与"可读上限"的较小者，且至少 1 条：声明值描述投影密度，
+    # 可读上限保证再密的声明也不会把页面排到出界。
+    declared_bullets = int(pptx_spec.get("max_bullets_per_slide") or 5)
+    bullet_capacity = max(1, min(declared_bullets, SLIDE_BULLET_CAPACITY))
     narrative_arc = [str(item) for item in pptx_spec.get("narrative_arc") or []]
     visual_direction = str(pptx_spec.get("visual_direction") or "")
     prs.core_properties.subject = " → ".join(narrative_arc)
     prs.core_properties.category = visual_direction
     plan_title = _plan_title(plan)
+    # 装不下的页在这里就拆开：续页与首页一视同仁，页码、页眉都按"真正会投影的页"
+    # 计算，而不是按模型写下的页数计算。
+    slides = _expand_slides(slides, bullet_capacity)
+    # 再按"目标字号下的高度"拆一次：宁可多一页，也不把正文压到 12pt
+    slides = _split_pages_by_height(slides, images)
     total = len(slides)
 
     for index, spec in enumerate(slides):
@@ -1565,6 +2026,13 @@ def generate_pptx(
         placement = str(image_spec.get("placement") or "right")
         if placement not in IMAGE_PLACEMENTS:
             placement = "right"
+        # 没有可用图片时把正文交回整幅宽度。
+        # 以前无论有没有图都按 "right" 排，于是 13.3in 的页面右半幅永远空着，
+        # 正文被挤进 4.98in 的窄栏、字号被压到 12pt（投影读不清）。
+        if placement == "right" and (images or {}).get(
+            str(image_spec.get("material_id") or "")
+        ) is None:
+            placement = "full"
         caption = strip_emphasis(str(image_spec.get("caption") or "")).strip()
         picture = {
             "placement": placement,
@@ -1582,24 +2050,27 @@ def generate_pptx(
         source_bullets = (
             narrative_arc if layout == "agenda" and narrative_arc else spec.get("bullets") or []
         )
-        bullets = [str(item) for item in source_bullets[:max_bullets]]
+        # 不再按 max_bullets 切片：超出的条目要么已经被 _expand_slides 拆成续页，
+        # 要么由各版式把"装不下的部分"交回 overflow 并入讲稿。切片是以前唯一
+        # 会静默吃掉内容的路径。
+        bullets = [str(item) for item in source_bullets]
         background_embedded = False
         # 版式各有容量上限（卡片 4、流程 4、度量 3），放不下的条目在这里收集，
         # 稍后并入讲稿。
         overflow: list = []
 
         if layout == "cover":
-            # 传未截断的 source_bullets：超过 max_bullets 的条目也要进讲稿，不能凭空消失。
-            overflow = _render_cover(
-                slide, spec, plan, picture, [str(item) for item in source_bullets]
-            )
+            overflow = _render_cover(slide, spec, plan, picture, bullets, total)
         elif layout == "section":
+            _decorate_slide(slide, layout)
             _render_section(slide, spec, picture)
         else:
+            # 图形层先画（在文字之下），再画页眉页码与正文
+            _decorate_slide(slide, layout)
             _add_chrome(slide, plan_title, index + 1, total)
             _add_sources(slide, spec.get("evidence_refs") or [])
             if layout == "agenda":
-                _render_agenda(slide, spec, bullets)
+                overflow = _render_agenda(slide, spec, bullets)
             elif layout == "steps":
                 overflow = _render_steps(slide, spec, bullets)
             elif layout == "flow":
@@ -1906,6 +2377,1108 @@ def generate_docx(
     return str(output_path)
 
 
+# ── 互动教具（学生动手探究的仿真） ─────────────────────────────
+#
+# 模型只写参数与公式；画布、控件、读数、引导步骤全部由这里渲染，公式经
+# backend.services.expressions 的白名单校验后翻成具名 JS 函数 —— 不用 eval、
+# 不用 new Function（那会要求 CSP 放开 unsafe-eval），产出的页面保持严格 CSP。
+
+
+def _scene_runtime(
+    scene: dict,
+    function_name: str,
+    functions: list[str],
+) -> dict:
+    """把 scene 的表达式几何属性编译成具名 JS 函数，属性替换为 {"compute": 名字}。
+
+    与读数公式同一机制：客户端只在 TOOL_COMPUTE 里查函数，页面无需 eval。
+    颜色 token 在这里翻成画布色值；其余样式属性（归一化时已钳制）原样透传。
+    """
+    entities: list[dict] = []
+    for entity_index, entity in enumerate(scene.get("entities") or [], start=1):
+        if not isinstance(entity, dict):
+            continue
+        kind = str(entity.get("kind") or "")
+        expression_props = SCENE_KIND_EXPRESSION_PROPS.get(kind, ())
+        compiled: dict[str, Any] = {"kind": kind}
+        for prop in expression_props:
+            expression = str(entity.get(prop) or "").strip()
+            if not expression:
+                continue
+            try:
+                used = referenced_names(expression)
+                js_source = to_javascript(expression)
+            except ExpressionError:
+                continue
+            local_names = sorted(name for name in used if name not in {"pi", "e"})
+            destruct = f"const {{{', '.join(local_names)}}} = x;" if local_names else ""
+            name = f"{function_name}_e{entity_index}_{prop}"
+            functions.append(f'  "{name}": function (x) {{ {destruct} return {js_source}; }},')
+            compiled[prop] = {"compute": name}
+        for key, value in entity.items():
+            if key == "kind" or key in expression_props:
+                continue
+            if key in ("stroke", "fill"):
+                token = str(value or "")
+                if token == "none":
+                    compiled[key] = "none"
+                else:
+                    compiled[key] = SCENE_PALETTE.get(token, "")
+                continue
+            compiled[key] = value
+        entities.append(compiled)
+    payload: dict[str, Any] = {
+        "background": SCENE_PALETTE.get(str(scene.get("background") or ""), "#ffffff"),
+        "entities": entities,
+    }
+    loop = scene.get("loop")
+    if isinstance(loop, (int, float)) and not isinstance(loop, bool) and loop > 0:
+        payload["loop"] = float(loop)
+    return payload
+
+
+def _tool_runtime(tools: list[dict]) -> tuple[str, str]:
+    """生成教具运行时：数据 JSON + 每个读数一个具名 JS 函数。"""
+    payload: list[dict] = []
+    functions: list[str] = []
+    for tool_index, tool in enumerate(tools, start=1):
+        tool_id = str(tool.get("tool_id") or f"tool_{tool_index:03d}")
+        function_name = re.sub(r"[^A-Za-z0-9_]", "_", f"{tool_id}_{tool_index}")
+        outputs = []
+        for output_index, output in enumerate(tool.get("outputs") or [], start=1):
+            expression = str(output.get("expression") or "").strip()
+            if not expression:
+                continue
+            try:
+                used = referenced_names(expression)
+                js_source = to_javascript(expression)
+            except ExpressionError:
+                continue
+            # pi / e 在 JS 侧映射成 Math.PI / Math.E，不需要解构
+            local_names = sorted(
+                name for name in used if name not in {"pi", "e"}
+            )
+            destruct = f"const {{{', '.join(local_names)}}} = x;" if local_names else ""
+            name = f"{function_name}_o{output_index}"
+            # 存进注册表而不是声明成全局函数：数据里的 compute 是"键"，
+            # 客户端用 TOOL_COMPUTE[key] 取函数，不会出现"字符串不可调用"这类错。
+            functions.append(f'  "{name}": function (x) {{ {destruct} return {js_source}; }},')
+            outputs.append(
+                {
+                    "key": str(output.get("key") or f"out{output_index}"),
+                    "label": str(output.get("label") or output.get("key") or ""),
+                    "unit": str(output.get("unit") or ""),
+                    "hint": str(output.get("hint") or ""),
+                    "compute": name,
+                }
+            )
+        variables = [
+            {
+                "key": str(variable.get("key")),
+                "label": str(variable.get("label") or variable.get("key")),
+                "unit": str(variable.get("unit") or ""),
+                "min": float(variable.get("min")),
+                "max": float(variable.get("max")),
+                "default": float(variable.get("default")),
+                "step": float(variable.get("step") or 1),
+            }
+            for variable in tool.get("variables") or []
+        ]
+        scene = tool.get("scene") if isinstance(tool.get("scene"), dict) else {}
+        if str(tool.get("engine") or "") == "scene" and scene.get("entities"):
+            scene = _scene_runtime(scene, function_name, functions)
+        payload.append(
+            {
+                "id": tool_id,
+                "engine": str(tool.get("engine") or "curve"),
+                "title": str(tool.get("title") or ""),
+                "variables": variables,
+                "outputs": outputs,
+                "constants": {
+                    str(key): float(value) for key, value in (tool.get("constants") or {}).items()
+                },
+                "scene": scene,
+            }
+        )
+    data_json = json.dumps(payload, ensure_ascii=False).translate(
+        str.maketrans({"<": "\\u003c", ">": "\\u003e", "&": "\\u0026"})
+    )
+    registry = "const TOOL_COMPUTE = {\n" + "\n".join(functions) + "\n};"
+    return data_json, registry
+
+
+def _tool_sections_html(tools: list[dict]) -> str:
+    """每个教具一块：画布 + 参数滑块 + 实时读数 + 先预测 + 引导步骤 + 原理注释。"""
+    if not tools:
+        return ""
+    blocks: list[str] = ['<section class="tools"><h2 class="section-title">动手探究</h2>']
+    for tool in tools:
+        tool_id = html_lib.escape(str(tool.get("tool_id") or ""))
+        title = html_lib.escape(str(tool.get("title") or "课堂探究工具"))
+        goal = html_lib.escape(str(tool.get("goal") or ""))
+        controls: list[str] = []
+        for variable in tool.get("variables") or []:
+            key = html_lib.escape(str(variable.get("key")))
+            label = html_lib.escape(str(variable.get("label") or key))
+            unit = str(variable.get("unit") or "")
+            unit_text = html_lib.escape(f"（{unit}）") if unit else ""
+            controls.append(
+                '<label class="control">'
+                f'<span class="control-label">{label}{unit_text}</span>'
+                f'<input type="range" data-tool="{tool_id}" data-var="{key}"'
+                f' min="{variable.get("min")}" max="{variable.get("max")}"'
+                f' step="{variable.get("step")}" value="{variable.get("default")}">'
+                f'<output data-out="{tool_id}:{key}">{variable.get("default")}</output>'
+                "</label>"
+            )
+        readouts: list[str] = []
+        for output in tool.get("outputs") or []:
+            key = html_lib.escape(str(output.get("key")))
+            label = html_lib.escape(str(output.get("label") or key))
+            unit = html_lib.escape(str(output.get("unit") or ""))
+            hint = html_lib.escape(str(output.get("hint") or ""))
+            hint_html = f'<span class="readout-hint">{hint}</span>' if hint else ""
+            readouts.append(
+                '<div class="readout">'
+                f'<span class="readout-label">{label}</span>'
+                f'<strong data-readout="{tool_id}:{key}">—</strong>'
+                f'<span class="readout-unit">{unit}</span>'
+                f"{hint_html}</div>"
+            )
+        predictions = "".join(
+            f"<li>{html_lib.escape(str(prompt))}</li>" for prompt in tool.get("predict_prompts") or []
+        )
+        predict_block = (
+            '<details class="predict" open><summary>先想一想再动手</summary>'
+            f"<ul>{predictions}</ul></details>"
+            if predictions
+            else ""
+        )
+        steps = "".join(
+            f"<li>{html_lib.escape(str(step))}</li>" for step in tool.get("guided_steps") or []
+        )
+        steps_block = f'<ol class="steps">{steps}</ol>' if steps else ""
+        checks = "".join(
+            f'<li><details class="check"><summary>展开参考答案</summary>'
+            f"<p>{html_lib.escape(str(question))}</p></details></li>"
+            for question in tool.get("check_questions") or []
+        )
+        checks_block = f'<ul class="checks">{checks}</ul>' if checks else ""
+        note = html_lib.escape(str(tool.get("model_note") or ""))
+        note_block = f'<p class="note">{note}</p>' if note else ""
+        scene_bar = ""
+        if str(tool.get("engine") or "") == "scene":
+            scene_bar = (
+                '<div class="scene-bar">'
+                f'<button type="button" class="scene-button" data-scene-toggle="{tool_id}">暂停</button>'
+                f'<button type="button" class="scene-button" data-scene-reset="{tool_id}">重置</button>'
+                "</div>"
+            )
+        blocks.append(
+            f"""
+  <article class="tool" id="tool_{tool_id}">
+    <h3>{title}</h3>
+    <p class="goal">{goal}</p>
+    <div class="tool-body">
+      <canvas id="canvas_{tool_id}" width="880" height="340" role="img"
+              aria-label="{title}的可交互示意图"></canvas>
+      <div class="tool-side">
+        {scene_bar}
+        <div class="controls">{''.join(controls)}</div>
+        <div class="readouts">{''.join(readouts)}</div>
+      </div>
+    </div>
+    {predict_block}
+    {steps_block}
+    {checks_block}
+    {note_block}
+  </article>"""
+        )
+    blocks.append("</section>")
+    return "\n".join(blocks)
+
+
+_TOOL_STYLES = """
+  .section-title { margin-top: 28px; }
+  .tool { margin-top: 18px; padding: 20px; border: 1px solid #dfe6f0; border-radius: 8px; background: #fbfdff; }
+  .tool h3 { margin: 0 0 6px; }
+  .tool .goal { margin: 0 0 14px; color: #47546b; }
+  .tool-body { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 16px; align-items: start; }
+  .tool canvas { width: 100%; height: auto; border: 1px solid #dfe6f0; border-radius: 6px; background: #fff; }
+  .controls { display: grid; gap: 12px; }
+  .control { display: grid; grid-template-columns: minmax(0, 1fr) 56px; gap: 4px 8px; align-items: center; }
+  .control-label { grid-column: 1 / -1; color: #47546b; font-size: 13px; }
+  .control input[type="range"] { width: 100%; }
+  .control output { text-align: right; font-variant-numeric: tabular-nums; }
+  .readouts { display: grid; gap: 8px; margin-top: 16px; }
+  .readout { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 8px; align-items: baseline; padding: 8px 10px; border-radius: 6px; background: #eef4ff; }
+  .readout-label { color: #47546b; font-size: 13px; }
+  .readout strong { font-variant-numeric: tabular-nums; }
+  .readout-unit { color: #6b778c; font-size: 12px; }
+  .readout-hint { grid-column: 1 / -1; color: #6b778c; font-size: 12px; }
+  .predict { margin-top: 14px; padding: 12px 14px; border-left: 3px solid #1463ff; background: #f2f7ff; }
+  .predict summary { cursor: pointer; font-weight: 700; }
+  .predict ul, .checks { margin: 8px 0 0; padding-left: 20px; line-height: 1.7; }
+  .steps { margin: 14px 0 0; padding-left: 20px; line-height: 1.8; }
+  .checks li { margin: 10px 0; }
+  .check summary { cursor: pointer; color: #1463ff; }
+  .note { margin: 14px 0 0; padding: 12px 14px; border-radius: 6px; background: #f7f9fc; color: #33415c; line-height: 1.7; }
+  .scene-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+  .scene-button { padding: 6px 14px; border: 1px solid #cad5e5; border-radius: 6px; background: #fff; color: #33415c; cursor: pointer; font-size: 13px; }
+  .scene-button:hover { border-color: #1463ff; color: #1463ff; }
+  @media (max-width: 760px) { .tool-body { grid-template-columns: 1fr; } }
+"""
+
+
+def _tool_engine_script() -> str:
+    """教具的客户端运行时：读数求值 + flow / curve 两个引擎。
+
+    这里刻意不出现 eval / new Function：公式在服务端已校验并翻成具名函数，
+    客户端只调用，页面 CSP 因此可以保持严格。
+    """
+    return """
+const TOOL_DATA = __TOOL_DATA__;
+__TOOL_FUNCTIONS__
+
+const toolValueCache = {};
+const toolFlowState = {};
+const toolSceneState = {};
+// 场景图元绘制失败只报一次（动画每帧都在重画，逐帧告警会刷屏）。
+const toolSceneWarned = {};
+
+function toolNumber(value) {
+  if (typeof value !== 'number' || !isFinite(value)) return '—';
+  const magnitude = Math.abs(value);
+  if (magnitude !== 0 && (magnitude < 0.01 || magnitude >= 100000)) {
+    return value.toExponential(2);
+  }
+  return String(Math.round(value * 1000) / 1000);
+}
+
+function toolReadValues(tool) {
+  const values = Object.assign({}, tool.constants || {});
+  (tool.variables || []).forEach((variable) => {
+    const input = document.querySelector(
+      'input[data-tool="' + tool.id + '"][data-var="' + variable.key + '"]',
+    );
+    values[variable.key] = input ? Number(input.value) : Number(variable.default);
+  });
+  return values;
+}
+
+function toolCall(output, values) {
+  const compute = TOOL_COMPUTE[output.compute];
+  if (typeof compute !== 'function') return NaN;
+  try {
+    const value = compute(values);
+    return typeof value === 'number' && isFinite(value) ? value : NaN;
+  } catch (error) {
+    return NaN;
+  }
+}
+
+function toolComputeOutputs(tool, values) {
+  const outputs = {};
+  (tool.outputs || []).forEach((output) => {
+    outputs[output.key] = toolCall(output, values);
+    const node = document.querySelector(
+      '[data-readout="' + tool.id + ':' + output.key + '"]',
+    );
+    if (node) node.textContent = toolNumber(outputs[output.key]);
+  });
+  return outputs;
+}
+
+/* ── curve 引擎：以第一个参数为横轴，画第一个读数随它的变化 ── */
+function toolDrawCurve(canvas, tool, values) {
+  const context = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  const xVariable = (tool.variables || [])[0];
+  const yOutput = (tool.outputs || [])[0];
+  if (!xVariable || !yOutput) return;
+  const padding = { left: 64, right: 24, top: 24, bottom: 46 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const samples = [];
+  for (let index = 0; index <= 140; index += 1) {
+    const x = xVariable.min + ((xVariable.max - xVariable.min) * index) / 140;
+    const probe = Object.assign({}, values);
+    probe[xVariable.key] = x;
+    samples.push([x, toolCall(yOutput, probe)]);
+  }
+  const finite = samples.filter((sample) => isFinite(sample[1])).map((sample) => sample[1]);
+  if (!finite.length) return;
+  let yMin = Math.min(...finite);
+  let yMax = Math.max(...finite);
+  if (yMax - yMin < 1e-9) {
+    yMax += Math.abs(yMax || 1) * 0.1 + 1e-6;
+    yMin -= Math.abs(yMin || 1) * 0.1 + 1e-6;
+  }
+  const yPad = (yMax - yMin) * 0.08;
+  yMin -= yPad;
+  yMax += yPad;
+  const toX = (x) => padding.left + ((x - xVariable.min) / (xVariable.max - xVariable.min || 1)) * plotWidth;
+  const toY = (y) => padding.top + plotHeight - ((y - yMin) / (yMax - yMin || 1)) * plotHeight;
+  context.strokeStyle = '#cad5e5';
+  context.lineWidth = 1;
+  context.beginPath();
+  context.moveTo(padding.left, padding.top);
+  context.lineTo(padding.left, padding.top + plotHeight);
+  context.lineTo(padding.left + plotWidth, padding.top + plotHeight);
+  context.stroke();
+  context.fillStyle = '#6b778c';
+  context.font = '14px Arial, "Microsoft YaHei", sans-serif';
+  context.fillText(xVariable.label + (xVariable.unit ? '(' + xVariable.unit + ')' : ''), padding.left + plotWidth / 2 - 40, height - 12);
+  context.save();
+  context.translate(18, padding.top + plotHeight / 2 + 40);
+  context.rotate(-Math.PI / 2);
+  context.fillText(yOutput.label + (yOutput.unit ? '(' + yOutput.unit + ')' : ''), 0, 0);
+  context.restore();
+  context.beginPath();
+  samples.forEach((sample, index) => {
+    if (!isFinite(sample[1])) return;
+    const x = toX(sample[0]);
+    const y = toY(sample[1]);
+    if (index === 0) context.moveTo(x, y);
+    else context.lineTo(x, y);
+  });
+  context.strokeStyle = '#1463ff';
+  context.lineWidth = 2.5;
+  context.stroke();
+  const currentY = toolCall(yOutput, values);
+  if (isFinite(currentY)) {
+    const cx = toX(values[xVariable.key]);
+    const cy = toY(currentY);
+    context.strokeStyle = '#f0700a';
+    context.setLineDash([5, 5]);
+    context.beginPath();
+    context.moveTo(cx, padding.top + plotHeight);
+    context.lineTo(cx, cy);
+    context.lineTo(padding.left, cy);
+    context.stroke();
+    context.setLineDash([]);
+    context.fillStyle = '#f0700a';
+    context.beginPath();
+    context.arc(cx, cy, 6, 0, Math.PI * 2);
+    context.fill();
+  }
+}
+
+/* ── flow 引擎：管道剖面。截面宽度来自前两个参数，粒子速度按连续性 ∝ 1/面积 ── */
+function toolFlowGeometry(tool, values) {
+  const variables = (tool.variables || []).slice(0, 2);
+  const sizes = variables.map((variable) => Math.max(Number(values[variable.key]) || 0, 1e-6));
+  const maxSize = Math.max.apply(null, sizes.concat([1e-6]));
+  return {
+    variables,
+    widths: sizes.map((size) => 0.24 + 0.52 * (size / maxSize)),
+    speeds: sizes.map((size) => Math.pow(maxSize / size, 2)),
+  };
+}
+
+function toolDrawFlow(canvas, tool, values, outputs) {
+  const context = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  const geometry = toolFlowGeometry(tool, values);
+  const splitX = width * 0.52;
+  const midY = height / 2;
+  const half1 = (geometry.widths[0] || 0.5) * height * 0.42;
+  const half2 = (geometry.widths[1] || geometry.widths[0] || 0.5) * height * 0.42;
+  context.clearRect(0, 0, width, height);
+  context.beginPath();
+  context.moveTo(0, midY - half1);
+  context.lineTo(splitX, midY - half1);
+  context.lineTo(splitX, midY - half2);
+  context.lineTo(width, midY - half2);
+  context.lineTo(width, midY + half2);
+  context.lineTo(splitX, midY + half2);
+  context.lineTo(splitX, midY + half1);
+  context.lineTo(0, midY + half1);
+  context.closePath();
+  context.fillStyle = '#e8f1ff';
+  context.fill();
+  context.strokeStyle = '#8fb4e8';
+  context.lineWidth = 2;
+  context.stroke();
+  const state = toolFlowState[tool.id] || (toolFlowState[tool.id] = { particles: null, last: 0 });
+  if (!state.particles) {
+    state.particles = [];
+    for (let index = 0; index < 34; index += 1) {
+      state.particles.push({ x: index / 34, offset: ((index % 3) - 1) * 0.28 });
+    }
+  }
+  const now = performance.now();
+  const elapsed = state.last ? Math.min((now - state.last) / 1000, 0.05) : 0;
+  state.last = now;
+  context.fillStyle = '#1463ff';
+  state.particles.forEach((particle) => {
+    const firstSection = particle.x < 0.52;
+    const speed = firstSection ? geometry.speeds[0] : geometry.speeds[1];
+    if (elapsed) {
+      particle.x += elapsed * 0.12 * Math.min(speed, 40);
+      if (particle.x > 1) particle.x -= 1;
+    }
+    const half = firstSection ? half1 : half2;
+    const x = particle.x * width;
+    const y = midY + particle.offset * half;
+    const radius = firstSection ? 4 : Math.max(2.4, 4 * Math.sqrt(half2 / half1 || 1));
+    context.beginPath();
+    context.arc(x, y, radius, 0, Math.PI * 2);
+    context.fill();
+  });
+  context.font = '14px Arial, "Microsoft YaHei", sans-serif';
+  context.fillStyle = '#47546b';
+  const labels = tool.variables || [];
+  if (labels[0]) context.fillText(labels[0].label, 14, 26);
+  if (labels[1]) context.fillText(labels[1].label, splitX + 14, 26);
+  let readoutY = height - 16;
+  (tool.outputs || []).slice(0, 2).forEach((output, index) => {
+    const value = outputs[output.key];
+    const unit = output.unit ? ' ' + output.unit : '';
+    context.fillStyle = index === 0 ? '#1463ff' : '#f0700a';
+    context.fillText(output.label + '：' + toolNumber(value) + unit, 14 + index * 220, readoutY);
+  });
+}
+
+/* ── field 引擎：把场画成热力图，探针点由前两个变量定位 ──
+   约定：variables[0] / variables[1] 是探针的两个坐标，outputs[0] 是该点的场值。 */
+function toolDrawField(canvas, tool, values, outputs) {
+  const context = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  const xVariable = (tool.variables || [])[0];
+  const yVariable = (tool.variables || [])[1];
+  const fieldOutput = (tool.outputs || [])[0];
+  if (!xVariable || !yVariable || !fieldOutput) return;
+  const padding = { left: 52, right: 24, top: 24, bottom: 40 };
+  const plotWidth = width - padding.left - padding.right;
+  const plotHeight = height - padding.top - padding.bottom;
+  const columns = 56;
+  const rows = 26;
+  const grid = [];
+  let min = Infinity;
+  let max = -Infinity;
+  for (let row = 0; row < rows; row += 1) {
+    const line = [];
+    for (let column = 0; column < columns; column += 1) {
+      const x = xVariable.min + ((xVariable.max - xVariable.min) * column) / (columns - 1);
+      const y = yVariable.min + ((yVariable.max - yVariable.min) * row) / (rows - 1);
+      const probe = Object.assign({}, values);
+      probe[xVariable.key] = x;
+      probe[yVariable.key] = y;
+      const value = toolCall(fieldOutput, probe);
+      line.push(value);
+      if (isFinite(value)) {
+        min = Math.min(min, value);
+        max = Math.max(max, value);
+      }
+    }
+    grid.push(line);
+  }
+  if (!isFinite(min) || !isFinite(max)) return;
+  const span = max - min || 1;
+  const cellWidth = plotWidth / columns;
+  const cellHeight = plotHeight / rows;
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      const value = grid[row][column];
+      if (!isFinite(value)) continue;
+      const ratio = (value - min) / span;
+      // 蓝 → 青 → 黄 → 红：冷暖两端各自可辨，不靠明度传达大小
+      context.fillStyle = 'hsl(' + Math.round(240 - 240 * ratio) + ', 78%, 58%)';
+      context.fillRect(
+        padding.left + column * cellWidth,
+        padding.top + plotHeight - (row + 1) * cellHeight,
+        cellWidth + 0.6,
+        cellHeight + 0.6,
+      );
+    }
+  }
+  context.strokeStyle = '#8fb4e8';
+  context.lineWidth = 1;
+  context.strokeRect(padding.left, padding.top, plotWidth, plotHeight);
+  const probeX =
+    padding.left + ((values[xVariable.key] - xVariable.min) / (xVariable.max - xVariable.min || 1)) * plotWidth;
+  const probeY =
+    padding.top + plotHeight - ((values[yVariable.key] - yVariable.min) / (yVariable.max - yVariable.min || 1)) * plotHeight;
+  context.fillStyle = '#0b1120';
+  context.beginPath();
+  context.arc(probeX, probeY, 7, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = '#ffffff';
+  context.lineWidth = 2.5;
+  context.beginPath();
+  context.arc(probeX, probeY, 7, 0, Math.PI * 2);
+  context.stroke();
+  context.fillStyle = '#47546b';
+  context.font = '14px Arial, "Microsoft YaHei", sans-serif';
+  context.fillText(xVariable.label, padding.left + plotWidth / 2 - 30, height - 12);
+  context.fillText(yVariable.label, 8, padding.top + plotHeight / 2);
+  const legend = fieldOutput.label + '：' + toolNumber(grid[Math.floor(rows / 2)][Math.floor(columns / 2)]);
+  context.fillStyle = '#6b778c';
+  context.fillText('场值范围 ' + toolNumber(min) + ' ~ ' + toolNumber(max), padding.left, 16);
+  context.fillText(legend, padding.left + plotWidth - 150, 16);
+}
+
+/* ── particles 引擎：粒子速度由第一个读数驱动（越快越扩散） ── */
+const toolParticleState = {};
+
+function toolDefaults(tool) {
+  const defaults = Object.assign({}, tool.constants || {});
+  (tool.variables || []).forEach((variable) => {
+    defaults[variable.key] = Number(variable.default);
+  });
+  return defaults;
+}
+
+function toolDrawParticles(canvas, tool, values, outputs) {
+  const context = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  const driver = (tool.outputs || [])[0];
+  const current = driver ? toolCall(driver, values) : NaN;
+  const baselineValue = driver ? Math.abs(toolCall(driver, toolDefaults(tool))) : NaN;
+  const baseline = isFinite(baselineValue) && baselineValue > 1e-9 ? baselineValue : 1;
+  const speed = isFinite(current) ? Math.min(Math.max(Math.abs(current) / baseline, 0.15), 6) : 1;
+  const padding = 26;
+  const boxWidth = width - padding * 2;
+  const boxHeight = height - padding * 2 - 22;
+  context.fillStyle = '#f4f8ff';
+  context.strokeStyle = '#8fb4e8';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.rect(padding, padding, boxWidth, boxHeight);
+  context.fill();
+  context.stroke();
+  const state =
+    toolParticleState[tool.id] ||
+    (toolParticleState[tool.id] = { items: null, last: 0, phase: 0 });
+  if (!state.items) {
+    state.items = [];
+    for (let index = 0; index < 90; index += 1) {
+      state.items.push({
+        x: Math.random(),
+        y: Math.random() * 0.6 + 0.2,
+        angle: Math.random() * Math.PI * 2,
+      });
+    }
+  }
+  const now = performance.now();
+  const elapsed = state.last ? Math.min((now - state.last) / 1000, 0.05) : 0;
+  state.last = now;
+  context.fillStyle = '#1463ff';
+  state.items.forEach((particle) => {
+    if (elapsed) {
+      particle.x += Math.cos(particle.angle) * elapsed * 0.12 * speed;
+      particle.y += Math.sin(particle.angle) * elapsed * 0.12 * speed;
+      // 撞壁反弹：粒子被"关"在容器里，速度越大分布越均匀
+      if (particle.x < 0 || particle.x > 1) {
+        particle.angle = Math.PI - particle.angle;
+        particle.x = Math.min(Math.max(particle.x, 0), 1);
+      }
+      if (particle.y < 0 || particle.y > 1) {
+        particle.angle = -particle.angle;
+        particle.y = Math.min(Math.max(particle.y, 0), 1);
+      }
+    }
+    context.beginPath();
+    context.arc(
+      padding + particle.x * boxWidth,
+      padding + particle.y * boxHeight,
+      3.4,
+      0,
+      Math.PI * 2,
+    );
+    context.fill();
+  });
+  context.fillStyle = '#47546b';
+  context.font = '14px Arial, "Microsoft YaHei", sans-serif';
+  if (driver) {
+    context.fillText(
+      driver.label + '：' + toolNumber(current) + (driver.unit ? ' ' + driver.unit : '') +
+        '（运动快慢约为基准的 ' + speed.toFixed(1) + ' 倍）',
+      padding,
+      height - 8,
+    );
+  }
+}
+
+/* ── balance 引擎：横梁倾斜由前两个变量的不平衡量决定 ── */
+function toolDrawBalance(canvas, tool, values, outputs) {
+  const context = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  const leftVariable = (tool.variables || [])[0];
+  const rightVariable = (tool.variables || [])[1];
+  const leftValue = leftVariable ? Number(values[leftVariable.key]) : 0;
+  const rightValue = rightVariable ? Number(values[rightVariable.key]) : 0;
+  const leftWeight = Math.abs(leftValue);
+  const rightWeight = Math.abs(rightValue);
+  const total = leftWeight + rightWeight || 1;
+  const tilt = Math.min(Math.max((rightWeight - leftWeight) / total, -1), 1) * 0.22;
+  const pivotX = width / 2;
+  const pivotY = height * 0.42;
+  const armLength = Math.min(width * 0.36, 320);
+  context.save();
+  context.translate(pivotX, pivotY);
+  context.rotate(tilt);
+  context.fillStyle = '#e8f1ff';
+  context.strokeStyle = '#8fb4e8';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.rect(-armLength, -9, armLength * 2, 18);
+  context.fill();
+  context.stroke();
+  context.restore();
+  const leftTipY = pivotY + Math.sin(tilt) * armLength;
+  const rightTipY = pivotY - Math.sin(tilt) * armLength;
+  const leftTipX = pivotX - Math.cos(tilt) * armLength;
+  const rightTipX = pivotX + Math.cos(tilt) * armLength;
+  context.fillStyle = '#1463ff';
+  context.strokeStyle = '#1463ff';
+  context.lineWidth = 2;
+  // 支点
+  context.beginPath();
+  context.moveTo(pivotX, pivotY + 46);
+  context.lineTo(pivotX - 22, pivotY + 76);
+  context.lineTo(pivotX + 22, pivotY + 76);
+  context.closePath();
+  context.fill();
+  // 两端向下的载荷箭头：长度 ∝ 该侧的力
+  const drawLoad = (x, y, weight, label, color) => {
+    const maxWeight = Math.max(leftWeight, rightWeight, 1e-6);
+    const length = 26 + 74 * (weight / maxWeight);
+    context.strokeStyle = color;
+    context.fillStyle = color;
+    context.beginPath();
+    context.moveTo(x, y);
+    context.lineTo(x, y + length);
+    context.stroke();
+    context.beginPath();
+    context.moveTo(x - 7, y + length);
+    context.lineTo(x + 7, y + length);
+    context.lineTo(x, y + length + 12);
+    context.closePath();
+    context.fill();
+    context.font = '14px Arial, "Microsoft YaHei", sans-serif';
+    context.fillText(label, x - 24, y + length + 32);
+  };
+  drawLoad(leftTipX, leftTipY + 10, leftWeight, toolNumber(leftValue), '#1463ff');
+  drawLoad(rightTipX, rightTipY + 10, rightWeight, toolNumber(rightValue), '#f0700a');
+  context.fillStyle = '#47546b';
+  context.font = '14px Arial, "Microsoft YaHei", sans-serif';
+  if (leftVariable && rightVariable) {
+    context.fillText(leftVariable.label, leftTipX - 30, leftTipY - 22);
+    context.fillText(rightVariable.label, rightTipX - 30, rightTipY - 22);
+  }
+  const balanceText =
+    Math.abs(tilt) < 0.004 ? '两侧相等，横梁平衡' : tilt > 0 ? '右侧更重，向右倾斜' : '左侧更重，向左倾斜';
+  context.fillStyle = '#6b778c';
+  context.fillText(balanceText, 14, 22);
+  const firstOutput = (tool.outputs || [])[0];
+  if (firstOutput) {
+    context.fillStyle = '#33415c';
+    context.fillText(
+      firstOutput.label + '：' + toolNumber(toolCall(firstOutput, values)) +
+        (firstOutput.unit ? ' ' + firstOutput.unit : ''),
+      14,
+      height - 12,
+    );
+  }
+}
+
+/* ── circuit 引擎：电池 + 两个电阻（串联），电流读数取 outputs[0] ── */
+function toolDrawCircuit(canvas, tool, values, outputs) {
+  const context = canvas.getContext('2d');
+  const width = canvas.width;
+  const height = canvas.height;
+  context.clearRect(0, 0, width, height);
+  const variables = tool.variables || [];
+  const left = variables[0];
+  const right = variables[1];
+  const leftResistance = left ? Math.abs(Number(values[left.key])) : 0;
+  const rightResistance = right ? Math.abs(Number(values[right.key])) : 0;
+  const padding = 60;
+  const leftX = padding;
+  const rightX = width - padding;
+  const topY = height * 0.28;
+  const bottomY = height * 0.74;
+  context.strokeStyle = '#33415c';
+  context.lineWidth = 2.5;
+  context.beginPath();
+  context.moveTo(leftX, bottomY);
+  context.lineTo(leftX, topY);
+  context.lineTo(rightX, topY);
+  context.lineTo(rightX, bottomY);
+  context.lineTo(leftX, bottomY);
+  context.stroke();
+  // 电池（左侧）
+  context.fillStyle = '#ffffff';
+  context.strokeStyle = '#33415c';
+  context.beginPath();
+  context.rect(leftX - 16, (topY + bottomY) / 2 - 30, 32, 60);
+  context.fill();
+  context.stroke();
+  context.fillStyle = '#33415c';
+  context.font = '14px Arial, "Microsoft YaHei", sans-serif';
+  context.fillText('电源', leftX - 22, (topY + bottomY) / 2 + 52);
+  // 两个电阻：宽度随阻值增长
+  const maxResistance = Math.max(leftResistance, rightResistance, 1e-6);
+  const drawResistor = (x, y, resistance, variable, color) => {
+    const boxWidth = 60 + 60 * (resistance / maxResistance);
+    context.fillStyle = '#eef4ff';
+    context.strokeStyle = color;
+    context.lineWidth = 2.5;
+    context.beginPath();
+    context.rect(x - boxWidth / 2, y - 16, boxWidth, 32);
+    context.fill();
+    context.stroke();
+    context.fillStyle = color;
+    context.fillText(
+      (variable ? variable.label : '电阻') + ' ' + toolNumber(resistance) +
+        (variable && variable.unit ? ' ' + variable.unit : ''),
+      x - boxWidth / 2,
+      y + 36,
+    );
+  };
+  drawResistor(width * 0.4, topY, leftResistance, left, '#1463ff');
+  if (right) drawResistor(width * 0.68, topY, rightResistance, right, '#f0700a');
+  // 电流读数
+  const currentOutput = (tool.outputs || [])[0];
+  if (currentOutput) {
+    context.fillStyle = '#33415c';
+    context.fillText(
+      currentOutput.label + '：' + toolNumber(toolCall(currentOutput, values)) +
+        (currentOutput.unit ? ' ' + currentOutput.unit : ''),
+      leftX,
+      bottomY + 40,
+    );
+  }
+  const secondOutput = (tool.outputs || [])[1];
+  if (secondOutput) {
+    context.fillStyle = '#33415c';
+    context.fillText(
+      secondOutput.label + '：' + toolNumber(toolCall(secondOutput, values)) +
+        (secondOutput.unit ? ' ' + secondOutput.unit : ''),
+      leftX,
+      bottomY + 62,
+    );
+  }
+}
+
+/* ── scene 引擎：模型按图元目录自由搭建的动态场景。几何属性已在服务端编译成
+      TOOL_COMPUTE 里的具名函数（可含场景时钟 t 与 path 采样参数 s），这里逐帧
+      求值、绘制，不做任何字符串求值，页面 CSP 因此仍是严格的。 ── */
+function toolSceneStateFor(tool) {
+  let state = toolSceneState[tool.id];
+  if (!state) {
+    const loop = Number((tool.scene || {}).loop);
+    state = toolSceneState[tool.id] = {
+      t: 0,
+      playing: true,
+      last: 0,
+      loop: isFinite(loop) && loop > 0 ? loop : 0,
+    };
+  }
+  return state;
+}
+
+function toolSceneTick(tool) {
+  const state = toolSceneStateFor(tool);
+  const now = performance.now();
+  const elapsed = state.last ? Math.min((now - state.last) / 1000, 0.05) : 0;
+  state.last = now;
+  if (!state.playing || !elapsed) return;
+  state.t += elapsed;
+  if (state.loop > 0 && state.t > state.loop) state.t %= state.loop;
+  else if (state.t > 3600) state.t = 3600;
+}
+
+function toolSceneScope(values, outputs, t) {
+  const scope = Object.assign({}, values, outputs);
+  scope.t = t;
+  return scope;
+}
+
+function toolSceneValue(prop, scope) {
+  if (prop && typeof prop === 'object' && prop.compute) {
+    const compute = TOOL_COMPUTE[prop.compute];
+    if (typeof compute !== 'function') return NaN;
+    try {
+      const value = compute(scope);
+      return typeof value === 'number' && isFinite(value) ? value : NaN;
+    } catch (error) {
+      return NaN;
+    }
+  }
+  return typeof prop === 'number' && isFinite(prop) ? prop : NaN;
+}
+
+function toolSceneColor(value, fallback) {
+  return typeof value === 'string' && value ? value : fallback;
+}
+
+function toolSceneRectPath(context, x, y, width, height, radius) {
+  const r = Math.max(0, Math.min(radius || 0, width / 2, height / 2));
+  context.beginPath();
+  if (!r) {
+    context.rect(x, y, width, height);
+    return;
+  }
+  context.moveTo(x + r, y);
+  context.lineTo(x + width - r, y);
+  context.arcTo(x + width, y, x + width, y + r, r);
+  context.lineTo(x + width, y + height - r);
+  context.arcTo(x + width, y + height, x + width - r, y + height, r);
+  context.lineTo(x + r, y + height);
+  context.arcTo(x, y + height, x, y + height - r, r);
+  context.lineTo(x, y + r);
+  context.arcTo(x, y, x + r, y, r);
+  context.closePath();
+}
+
+function toolSceneEntity(context, tool, entity, scope, outputs) {
+  const kind = entity.kind;
+  const stroke = toolSceneColor(entity.stroke, '#1463ff');
+  const fill = toolSceneColor(entity.fill, 'none');
+  const lineWidth = Math.max(0.5, Number(entity.stroke_width) || 2);
+  context.save();
+  context.setLineDash(Array.isArray(entity.dash) ? entity.dash : []);
+  if (kind === 'circle') {
+    const cx = toolSceneValue(entity.cx, scope);
+    const cy = toolSceneValue(entity.cy, scope);
+    const r = toolSceneValue(entity.r, scope);
+    if (isFinite(cx) && isFinite(cy) && isFinite(r) && r > 0) {
+      context.beginPath();
+      context.arc(cx, cy, r, 0, Math.PI * 2);
+      if (fill !== 'none') { context.fillStyle = fill; context.fill(); }
+      context.strokeStyle = stroke;
+      context.lineWidth = lineWidth;
+      context.stroke();
+    }
+  } else if (kind === 'rect') {
+    let x = toolSceneValue(entity.x, scope);
+    let y = toolSceneValue(entity.y, scope);
+    let w = toolSceneValue(entity.w, scope);
+    let h = toolSceneValue(entity.h, scope);
+    if (isFinite(x) && isFinite(y) && isFinite(w) && isFinite(h) && w !== 0 && h !== 0) {
+      if (w < 0) { x += w; w = -w; }
+      if (h < 0) { y += h; h = -h; }
+      toolSceneRectPath(context, x, y, w, h, Number(entity.radius) || 0);
+      if (fill !== 'none') { context.fillStyle = fill; context.fill(); }
+      context.strokeStyle = stroke;
+      context.lineWidth = lineWidth;
+      context.stroke();
+    }
+  } else if (kind === 'line' || kind === 'arrow') {
+    const x1 = toolSceneValue(entity.x1, scope);
+    const y1 = toolSceneValue(entity.y1, scope);
+    const x2 = toolSceneValue(entity.x2, scope);
+    const y2 = toolSceneValue(entity.y2, scope);
+    if (isFinite(x1) && isFinite(y1) && isFinite(x2) && isFinite(y2)) {
+      context.strokeStyle = stroke;
+      context.lineWidth = lineWidth;
+      context.beginPath();
+      context.moveTo(x1, y1);
+      context.lineTo(x2, y2);
+      context.stroke();
+      if (kind === 'arrow' && (x1 !== x2 || y1 !== y2)) {
+        const angle = Math.atan2(y2 - y1, x2 - x1);
+        const head = Math.max(4, Number(entity.head) || 12);
+        context.beginPath();
+        context.moveTo(x2, y2);
+        context.lineTo(
+          x2 - head * Math.cos(angle - Math.PI / 7),
+          y2 - head * Math.sin(angle - Math.PI / 7),
+        );
+        context.moveTo(x2, y2);
+        context.lineTo(
+          x2 - head * Math.cos(angle + Math.PI / 7),
+          y2 - head * Math.sin(angle + Math.PI / 7),
+        );
+        context.stroke();
+      }
+    }
+  } else if (kind === 'path') {
+    const samples = Math.max(2, Math.min(Number(entity.samples) || 120, 240));
+    context.strokeStyle = stroke;
+    context.lineWidth = lineWidth;
+    context.beginPath();
+    let started = false;
+    for (let index = 0; index <= samples; index += 1) {
+      scope.s = index / samples;
+      const px = toolSceneValue(entity.x, scope);
+      const py = toolSceneValue(entity.y, scope);
+      if (!isFinite(px) || !isFinite(py)) { started = false; continue; }
+      if (started) context.lineTo(px, py);
+      else { context.moveTo(px, py); started = true; }
+    }
+    if (fill !== 'none') { context.fillStyle = fill; context.fill(); }
+    context.stroke();
+  } else if (kind === 'text') {
+    const x = toolSceneValue(entity.x, scope);
+    const y = toolSceneValue(entity.y, scope);
+    if (isFinite(x) && isFinite(y)) {
+      const size = Math.max(8, Number(entity.size) || 16);
+      context.font = size + 'px Arial, "Microsoft YaHei", sans-serif';
+      context.textAlign =
+        entity.align === 'center' ? 'center' : entity.align === 'right' ? 'right' : 'left';
+      context.textBaseline = 'middle';
+      context.fillStyle = fill !== 'none' ? fill : '#33415c';
+      context.fillText(String(entity.content || ''), x, y);
+    }
+  } else if (kind === 'readout') {
+    const x = toolSceneValue(entity.x, scope);
+    const y = toolSceneValue(entity.y, scope);
+    const output = (tool.outputs || []).filter((item) => item.key === entity.output)[0];
+    if (isFinite(x) && isFinite(y) && output) {
+      const size = Math.max(8, Number(entity.size) || 14);
+      const text =
+        output.label + ' ' + toolNumber(outputs[entity.output]) +
+        (output.unit ? ' ' + output.unit : '');
+      context.font = size + 'px Arial, "Microsoft YaHei", sans-serif';
+      context.textAlign =
+        entity.align === 'center' ? 'center' : entity.align === 'right' ? 'right' : 'left';
+      context.textBaseline = 'middle';
+      const metrics = context.measureText(text);
+      let left = x - 6;
+      if (context.textAlign === 'center') left = x - metrics.width / 2 - 6;
+      else if (context.textAlign === 'right') left = x - metrics.width - 6;
+      context.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      context.fillRect(left, y - size * 0.9, metrics.width + 12, size * 1.8);
+      context.fillStyle = fill !== 'none' ? fill : '#33415c';
+      context.fillText(text, x, y);
+    }
+  }
+  context.restore();
+}
+
+function toolDrawScene(canvas, tool, values, outputs) {
+  const context = canvas.getContext('2d');
+  const scene = tool.scene || {};
+  const state = toolSceneStateFor(tool);
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = toolSceneColor(scene.background, '#ffffff');
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const scope = toolSceneScope(values, outputs, state.t);
+  (scene.entities || []).forEach((entity) => {
+    try {
+      toolSceneEntity(context, tool, entity, scope, outputs);
+    } catch (error) {
+      /* 单个元素画不出来不影响整幅场景；但要在控制台留痕，别让整类图元悄悄消失 */
+      const mark = tool.id + ':' + (entity.kind || '?');
+      if (!toolSceneWarned[mark] && window.console && window.console.warn) {
+        toolSceneWarned[mark] = true;
+        window.console.warn('场景图元绘制失败：' + mark, error);
+      }
+    }
+  });
+}
+
+function toolSceneRedraw(tool) {
+  const cached = toolValueCache[tool.id];
+  if (cached) toolDraw(tool, cached.values, cached.outputs);
+}
+
+function toolSceneBindControls(tool, reduced) {
+  if (tool.engine !== 'scene') return;
+  const state = toolSceneStateFor(tool);
+  if (reduced) state.playing = false;
+  const toggle = document.querySelector('[data-scene-toggle="' + tool.id + '"]');
+  const reset = document.querySelector('[data-scene-reset="' + tool.id + '"]');
+  if (toggle) {
+    toggle.textContent = reduced ? '前进 0.5 秒' : state.playing ? '暂停' : '继续';
+    toggle.addEventListener('click', () => {
+      if (reduced) {
+        // 减少动态效果：不自动播放，点一次前进半秒，逐步观察
+        state.t += 0.5;
+        toolSceneRedraw(tool);
+        return;
+      }
+      state.playing = !state.playing;
+      state.last = 0;
+      toggle.textContent = state.playing ? '暂停' : '继续';
+    });
+  }
+  if (reset) {
+    reset.addEventListener('click', () => {
+      state.t = 0;
+      state.last = 0;
+      toolSceneRedraw(tool);
+    });
+  }
+}
+
+const TOOL_ENGINES = {
+  flow: toolDrawFlow,
+  curve: toolDrawCurve,
+  field: toolDrawField,
+  particles: toolDrawParticles,
+  balance: toolDrawBalance,
+  circuit: toolDrawCircuit,
+  scene: toolDrawScene,
+};
+
+function toolDraw(tool, values, outputs) {
+  const canvas = document.getElementById('canvas_' + tool.id);
+  if (!canvas) return;
+  const draw = TOOL_ENGINES[tool.engine] || toolDrawCurve;
+  draw(canvas, tool, values, outputs);
+}
+
+function toolRefresh(tool) {
+  const values = toolReadValues(tool);
+  (tool.variables || []).forEach((variable) => {
+    const node = document.querySelector('[data-out="' + tool.id + ':' + variable.key + '"]');
+    if (node) node.textContent = toolNumber(values[variable.key]);
+  });
+  const outputs = toolComputeOutputs(tool, values);
+  toolValueCache[tool.id] = { values, outputs };
+  toolDraw(tool, values, outputs);
+}
+
+function toolInit() {
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  TOOL_DATA.forEach((tool) => {
+    (tool.variables || []).forEach((variable) => {
+      const input = document.querySelector(
+        'input[data-tool="' + tool.id + '"][data-var="' + variable.key + '"]',
+      );
+      if (input) input.addEventListener('input', () => toolRefresh(tool));
+    });
+    toolSceneBindControls(tool, reduced);
+    toolRefresh(tool);
+  });
+  if (reduced) return;
+  // 只有需要动起来的引擎进动画循环：flow 的粒子、particles 的分子运动与 scene 场景
+  const ANIMATED = { flow: true, particles: true, scene: true };
+  const animate = () => {
+    TOOL_DATA.forEach((tool) => {
+      if (!ANIMATED[tool.engine]) return;
+      const cached = toolValueCache[tool.id];
+      if (!cached) return;
+      if (tool.engine === 'scene') {
+        // 暂停中的场景不再逐帧重绘（拖滑块会自己触发一次 toolRefresh）
+        if (!toolSceneStateFor(tool).playing) return;
+        toolSceneTick(tool);
+      }
+      toolDraw(tool, cached.values, cached.outputs);
+    });
+    window.requestAnimationFrame(animate);
+  };
+  window.requestAnimationFrame(animate);
+}
+
+if (TOOL_DATA.length) toolInit();
+"""
+
+
 def generate_html(
     plan: dict,
     rag_docs: list | None = None,
@@ -1959,6 +3532,20 @@ def generate_html(
         str.maketrans({"<": "\\u003c", ">": "\\u003e", "&": "\\u0026"})
     )
     source_text = html_lib.escape(_source_line(interaction.get("evidence_refs") or []))
+    # 互动教具：先让学生动手探究，再落到检测题。没有教具的蓝图（含历史蓝图）
+    # 走原来的渲染路径，页面与以前完全一致。
+    tools = [item for item in (plan.get("interactive_tools") or []) if isinstance(item, dict)]
+    tools_json, tool_functions = _tool_runtime(tools)
+    tools_html = _tool_sections_html(tools)
+    tool_styles = _TOOL_STYLES if tools else ""
+    engine_script = (
+        _tool_engine_script()
+        .replace("__TOOL_DATA__", tools_json)
+        .replace("__TOOL_FUNCTIONS__", tool_functions)
+        if tools
+        else ""
+    )
+    detection_heading = '<h2 class="section-title">检测环节</h2>' if tools else ""
     html = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1981,11 +3568,14 @@ def generate_html(
   #explanation {{ display: none; padding: 14px; background: #f7f9fc; border-left: 3px solid #1463ff; line-height: 1.6; }}
   .source {{ margin-top: 24px; color: #6b778c; font-size: 12px; }}
   @media (max-width: 600px) {{ body {{ padding: 12px; }} main {{ padding: 20px; }} .assignment {{ grid-template-columns: 1fr; }} }}
+{tool_styles}
 </style>
 </head>
 <body>
 <main>
   <h1>{title}</h1>
+{tools_html}
+  {detection_heading}
   <h2>{interaction_title}</h2>
   <p>{prompt}</p>
   <p class="mode">互动方式：{html_lib.escape(interaction_type_label)}</p>
@@ -1996,6 +3586,7 @@ def generate_html(
   <p class="source">{source_text}</p>
 </main>
 <script>
+{engine_script}
 const data = {data_json};
 const selected = [];
 const assignments = new Map();

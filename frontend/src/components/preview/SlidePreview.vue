@@ -2,7 +2,10 @@
   <div class="slide-preview">
     <!-- 16:9 画布：几何完全对齐 backend/services/generator.py 的 pptx 版面 -->
     <div class="slide-frame">
-      <div class="slide-stage" :class="[`place-${placement}`, { 'has-caption': showCaptionBelow }]">
+      <div
+        class="slide-stage"
+        :class="[`place-${placement}`, `layout-${layout}`, { 'has-caption': showCaptionBelow }]"
+      >
         <img
           v-if="fullBleed && imageUrl"
           class="stage-image is-fullbleed"
@@ -50,7 +53,7 @@
           >
             <span v-if="card.label" class="card-rule" aria-hidden="true"></span>
             <span v-if="card.label" class="card-label">{{ card.label }}</span>
-            <span class="card-body">{{ card.body }}</span>
+            <span class="card-body" v-html="emphasizeHtml(card.body)" />
           </button>
         </div>
 
@@ -62,7 +65,7 @@
               :class="{ 'is-active': isActive('bullets', index) }"
               @click="select('bullets', index)"
             >
-              {{ stage }}
+              <span v-html="emphasizeHtml(stage)" />
             </button>
             <span v-if="index < flowStages.length - 1" class="flow-arrow" aria-hidden="true"></span>
           </template>
@@ -78,7 +81,7 @@
             @click="select('bullets', metric.index)"
           >
             <span v-if="metric.figure" class="metric-figure">{{ metric.figure }}</span>
-            <span class="metric-label">{{ metric.label }}</span>
+            <span class="metric-label" v-html="emphasizeHtml(metric.label)" />
           </button>
         </div>
 
@@ -93,7 +96,7 @@
               :class="{ 'is-active': isActive('bullets', line.index) }"
               @click="select('bullets', line.index)"
             >
-              {{ line.text }}
+              <span v-html="emphasizeHtml(line.text)" />
             </button>
             <button
               v-if="attribution"
@@ -116,7 +119,7 @@
               @click="select('bullets', index)"
             >
               <span class="bullet-marker" aria-hidden="true">•</span>
-              <span class="bullet-text">{{ bullet }}</span>
+              <span class="bullet-text" v-html="emphasizeHtml(bullet)" />
             </button>
           </li>
         </ol>
@@ -168,10 +171,17 @@ const emit = defineEmits(['select'])
 
 const PLACEMENTS = ['right', 'full', 'background']
 
-/** 与后端一致：非法值退回 right，避免预览和导出出现分歧。 */
+/**
+ * 与后端一致：非法值退回 right；**没有配图时退回 full**。
+ *
+ * 没有图片却按 right 排版，正文会被挤进左侧 40.5% 的窄栏、右半页整片空着，
+ * 字号也跟着被压低——导出与预览都会这样，所以两边必须用同一条规则。
+ */
 const placement = computed(() => {
-  const value = String(props.slide.image?.placement || 'right')
-  return PLACEMENTS.includes(value) ? value : 'right'
+  const raw = String(props.slide.image?.placement || 'right')
+  const value = PLACEMENTS.includes(raw) ? raw : 'right'
+  if (value === 'right' && !props.imageUrl) return 'full'
+  return value
 })
 const caption = computed(() => String(props.slide.image?.caption || ''))
 /**
@@ -197,6 +207,19 @@ const visibleBullets = computed(() => (
   bulletsList.value.slice(0, LAYOUT_CAPACITY[layout.value] ?? bulletsList.value.length)
 ))
 const overflowCount = computed(() => bulletsList.value.length - visibleBullets.value.length)
+
+/**
+ * 与后端一致：**双星号** 是唯一会被渲染成强调的标记（PPTX 里是加粗）。
+ * 预览必须同样渲染，否则教师会在画布上看到裸星号，而导出文件里却是粗体。
+ * 先转义再替换，避免要点里的 < > 被当成标签。
+ */
+function emphasizeHtml(text) {
+  const escaped = String(text ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  return escaped.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+}
 
 /** 与后端 _split_card_label 一致：只有小标题足够短时才拆成两层。 */
 const CARD_LABEL_MAX_CHARS = 8
@@ -256,7 +279,7 @@ function select(field, index = null) {
 <style scoped>
 .slide-preview {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
@@ -278,10 +301,10 @@ function select(field, index = null) {
   position: relative;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border: 1px solid #d8dfe9;
-  border-radius: 10px;
-  background: #fff;
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
+  border: 1px solid var(--slide-canvas-border);
+  border-radius: var(--radius-md);
+  background: var(--slide-canvas-bg);
+  box-shadow: var(--shadow-card);
 }
 
 .stage-title,
@@ -301,6 +324,7 @@ function select(field, index = null) {
   width: 87%;
   max-height: 60.67%;
   overflow: hidden;
+  z-index: 1;
 }
 
 .stage-title {
@@ -311,7 +335,9 @@ function select(field, index = null) {
   font-size: 3.2cqw;
   font-weight: 700;
   line-height: 1.25;
-  color: #0f172a;
+  /* 图形装饰画在 z-index 0，正文一律在它之上 */
+  z-index: 1;
+  color: var(--text-primary);
   overflow: hidden;
 }
 
@@ -321,7 +347,8 @@ function select(field, index = null) {
   width: 87%;
   font-size: 1.7cqw;
   font-style: italic;
-  color: #64748b;
+  z-index: 1;
+  color: var(--text-tertiary);
 }
 
 .stage-bullets {
@@ -340,7 +367,97 @@ function select(field, index = null) {
 .stage-hint {
   margin: 0;
   font-size: 1.7cqw;
-  color: #94a3b8;
+  color: var(--text-disabled);
+}
+
+/*
+ * 程序化图形装饰：与 backend/services/generator.py 的 _decorate_slide() 成对维护。
+ *
+ * 没有上传配图时，页面也要有视觉——以前每页都是"标题 + 一块浅底 + 一列圆点"，
+ * 整册一个样。这些都是 z-index 0 的纯装饰（不承载任何信息），正文在它们之上。
+ */
+.slide-stage::before,
+.slide-stage::after {
+  content: '';
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+}
+
+/* 封面：右上角几何圆组。用径向渐变叠圆而不是 box-shadow —— 阴影令牌只服务于
+   "层级"，拿它画图形会让设计规范的检查失去意义。 */
+.layout-cover::before {
+  right: 4.1%;
+  top: 4%;
+  width: 12cqw;
+  height: 12cqw;
+  background:
+    radial-gradient(circle at 28% 86%, var(--slide-decor) 0 21%, transparent 22%),
+    radial-gradient(circle at 62% 46%, var(--slide-decor) 0 49%, transparent 50%);
+}
+
+.layout-cover::after {
+  right: 16.2%;
+  top: 18%;
+  width: 7.9cqw;
+  height: 7.9cqw;
+  border-radius: 50%;
+  background: var(--slide-decor-warm);
+}
+
+/* 章节页：右侧斜切色块 */
+.layout-section::after {
+  inset: 0 0 0 68.3%;
+  clip-path: polygon(22% 0, 100% 0, 100% 100%, 0 100%);
+  background: var(--slide-decor);
+}
+
+/* 正文页：内容区左侧主色细竖条 + 页脚色条，打破"一大块浅底" */
+.layout-bullets::before,
+.layout-agenda::before,
+.layout-summary::before,
+.layout-steps::before {
+  left: 4.87%;
+  top: 25.33%;
+  width: 0.38cqw;
+  height: 57.3%;
+  background: var(--slide-primary);
+  opacity: 0.4;
+}
+
+.layout-bullets::after,
+.layout-agenda::after,
+.layout-summary::after,
+.layout-steps::after {
+  inset: auto 0 0 0;
+  height: 0.8cqw;
+  background: var(--slide-primary);
+  opacity: 0.85;
+}
+
+/* 对比页：两栏顶部各一道色条（冷暖对照） */
+.layout-compare::after {
+  left: 4.87%;
+  right: 4.87%;
+  top: 22.9%;
+  height: 0.66cqw;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--slide-primary) 0 48.5%,
+    transparent 48.5% 51.5%,
+    var(--slide-warm) 51.5% 100%
+  );
+}
+
+/* 度量页：数值条的底槽（填充由数值决定，导出端同位置画） */
+.layout-metric::after {
+  left: 4.87%;
+  right: 4.87%;
+  top: 86.1%;
+  height: 1.3cqw;
+  border-radius: 999px;
+  background: var(--slide-track);
 }
 
 /*
@@ -362,9 +479,9 @@ function select(field, index = null) {
   display: grid;
   gap: 0.7cqw;
   padding: 2.2cqw 1.5cqw;
-  border: 1px solid #d3e0f5;
-  border-radius: 8px;
-  background: #f5f8ff;
+  border: 1px solid var(--slide-accent-soft-border);
+  border-radius: var(--radius-md);
+  background: var(--slide-accent-soft-bg);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -374,21 +491,21 @@ function select(field, index = null) {
   width: 2.5cqw;
   height: 0.42cqw;
   border-radius: 2px;
-  background: #1463ff;
+  background: var(--slide-primary);
 }
 
 .card-label {
   font-size: 1.77cqw; /* 17pt */
   font-weight: 700;
   line-height: 1.35;
-  color: #0b3fa8;
+  color: var(--slide-accent);
 }
 
 .card-body {
   min-width: 0;
   font-size: 1.56cqw; /* 15pt */
   line-height: 1.45;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 /* 流程：横向等宽块 + 块间箭头（后端箭头宽 0.30in，落在 0.62in 的间隙里） */
@@ -401,13 +518,13 @@ function select(field, index = null) {
   flex: 1 1 0;
   min-width: 0;
   padding: 2.4cqw 1.4cqw;
-  border: 1px solid #d3e0f5;
-  border-radius: 8px;
-  background: #f5f8ff;
+  border: 1px solid var(--slide-accent-soft-border);
+  border-radius: var(--radius-md);
+  background: var(--slide-accent-soft-bg);
   font-family: inherit;
   font-size: 1.56cqw; /* 15pt */
   line-height: 1.45;
-  color: #1e293b;
+  color: var(--text-primary);
   text-align: left;
   cursor: pointer;
 }
@@ -423,7 +540,7 @@ function select(field, index = null) {
   content: '';
   width: 0;
   height: 0;
-  border-left: 2.25cqw solid #1463ff;
+  border-left: 2.25cqw solid var(--slide-primary);
   border-top: 0.83cqw solid transparent;
   border-bottom: 0.83cqw solid transparent;
 }
@@ -443,9 +560,9 @@ function select(field, index = null) {
   justify-items: center;
   gap: 1.4cqw;
   padding: 2.4cqw 1.4cqw;
-  border: 1px solid #d3e0f5;
-  border-radius: 8px;
-  background: #f5f8ff;
+  border: 1px solid var(--slide-accent-soft-border);
+  border-radius: var(--radius-md);
+  background: var(--slide-accent-soft-bg);
   font-family: inherit;
   text-align: center;
   cursor: pointer;
@@ -455,13 +572,13 @@ function select(field, index = null) {
   font-size: 4.58cqw; /* 44pt */
   font-weight: 700;
   line-height: 1.1;
-  color: #1463ff;
+  color: var(--slide-primary);
 }
 
 .metric-label {
   font-size: 1.46cqw; /* 14pt */
   line-height: 1.5;
-  color: #64748b;
+  color: var(--text-tertiary);
 }
 
 /* 提不出数字的条目按普通短句排，与后端的降级一致 */
@@ -473,7 +590,7 @@ function select(field, index = null) {
 
 .metric-button.is-plain .metric-label {
   font-size: 1.67cqw; /* 16pt */
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 /* 引用：左侧主色竖条标出引文边界，出处右对齐排在下方 */
@@ -487,7 +604,7 @@ function select(field, index = null) {
 .quote-bar {
   align-self: stretch;
   min-height: 22cqw;
-  background: #1463ff;
+  background: var(--slide-primary);
 }
 
 .quote-lines {
@@ -498,12 +615,12 @@ function select(field, index = null) {
 .quote-line {
   padding: 0.35cqw 0.6cqw;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   font-family: inherit;
   font-size: 2.08cqw; /* 20pt */
   line-height: 1.45;
-  color: #0b3fa8;
+  color: var(--slide-accent);
   text-align: left;
   cursor: pointer;
 }
@@ -511,11 +628,11 @@ function select(field, index = null) {
 .quote-attribution {
   padding: 0.35cqw 0.6cqw;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   font-family: inherit;
   font-size: 1.35cqw; /* 13pt */
-  color: #64748b;
+  color: var(--text-tertiary);
   text-align: right;
   cursor: pointer;
 }
@@ -525,7 +642,7 @@ function select(field, index = null) {
 .metric-button:hover,
 .quote-line:hover,
 .quote-attribution:hover {
-  border-color: #c7dcff;
+  border-color: var(--brand-200);
 }
 
 .card-button.is-active,
@@ -533,8 +650,8 @@ function select(field, index = null) {
 .metric-button.is-active,
 .quote-line.is-active,
 .quote-attribution.is-active {
-  border-color: #1463ff;
-  background: #e6f0ff;
+  border-color: var(--slide-primary);
+  background: var(--slide-chip-bg);
 }
 
 .stage-caption {
@@ -544,7 +661,7 @@ function select(field, index = null) {
   width: 87%;
   margin: 0;
   font-size: 1.5cqw;
-  color: #64748b;
+  color: var(--text-tertiary);
   overflow: hidden;
 }
 
@@ -559,7 +676,7 @@ function select(field, index = null) {
   top: 90%;
   height: 4.67%;
   font-size: 1.4cqw;
-  color: #94a3b8;
+  color: var(--text-disabled);
 }
 
 /* 图片框：contain 居中，和后端的等比缩放一致 */
@@ -617,7 +734,7 @@ function select(field, index = null) {
   margin: 0;
   padding: 0.35cqw 0.8cqw;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: transparent;
   font-family: inherit;
   text-align: left;
@@ -632,12 +749,12 @@ function select(field, index = null) {
   width: 100%;
   font-size: 2cqw;
   line-height: 1.35;
-  color: #1e293b;
+  color: var(--text-primary);
 }
 
 .bullet-marker {
   flex: none;
-  color: #1463ff;
+  color: var(--slide-primary);
   font-weight: 700;
 }
 
@@ -647,53 +764,53 @@ function select(field, index = null) {
 .stage-purpose:hover,
 .bullet-button:hover,
 .notes-button:hover {
-  background: #eef4ff;
-  border-color: #c7dcff;
+  background: var(--brand-50);
+  border-color: var(--brand-200);
 }
 
 .stage-title.is-active,
 .stage-purpose.is-active,
 .bullet-button.is-active,
 .notes-button.is-active {
-  background: #e6f0ff;
-  border-color: #1463ff;
+  background: var(--slide-chip-bg);
+  border-color: var(--slide-primary);
 }
 
 .notes-strip {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
+  gap: var(--space-2);
   align-items: start;
-  padding: 10px 12px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 8px;
-  background: #f8fafc;
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-sunken);
 }
 
 .notes-caption {
-  padding-top: 3px;
-  color: #64748b;
-  font-size: 12px;
+  padding-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
   font-weight: 600;
 }
 
 .notes-button {
   width: 100%;
-  padding: 3px 8px;
-  color: #475569;
-  font-size: 13px;
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
   line-height: 1.55;
 }
 
 .scrim-note {
   margin: 0;
-  color: #94a3b8;
-  font-size: 12px;
+  color: var(--text-disabled);
+  font-size: var(--text-xs);
 }
 
 .overflow-note {
   margin: 0;
-  color: #c2410c;
-  font-size: 12px;
+  color: var(--slide-warn-text);
+  font-size: var(--text-xs);
 }
 </style>

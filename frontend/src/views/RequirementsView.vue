@@ -1,40 +1,50 @@
 <template>
-  <div class="page-stack requirements-entry">
-    <header class="page-header">
-      <div>
-        <h1>需求共创</h1>
-        <p>正在进入当前项目的 AI 共创会话。</p>
-      </div>
-    </header>
+  <div class="page-stack entry-page">
+    <AppPageHeader
+      v-if="!loading && !errorMessage"
+      title="需求共创"
+      subtitle="正在进入这个教案的 AI 共创会话。"
+    />
 
-    <section class="section-card entry-state">
-      <el-skeleton v-if="loading" :rows="4" animated />
-      <el-alert
-        v-else-if="errorMessage"
-        :title="errorMessage"
-        type="error"
-        show-icon
-        :closable="false"
-      >
-        <template #default>
-          <div class="state-actions">
-            <el-button size="small" type="primary" @click="openActiveProject">重试</el-button>
-            <el-button size="small" @click="router.push('/')">返回工作台</el-button>
-          </div>
-        </template>
-      </el-alert>
-      <el-empty v-else description="请先从工作台选择一个项目">
-        <el-button type="primary" @click="router.push('/')">返回工作台</el-button>
-      </el-empty>
+    <section v-if="loading" class="section-card entry-loading" aria-live="polite">
+      <el-skeleton :rows="4" animated />
+      <p class="entry-hint">正在打开会话……</p>
     </section>
+
+    <el-alert
+      v-else-if="errorMessage"
+      :title="errorMessage"
+      type="error"
+      show-icon
+      :closable="false"
+    >
+      <template #default>
+        <div class="entry-actions">
+          <el-button size="small" type="primary" @click="openActiveProject">重试</el-button>
+          <el-button size="small" @click="router.push('/')">返回工作台</el-button>
+        </div>
+      </template>
+    </el-alert>
+
+    <AppEmptyState
+      v-else
+      :icon="Reading"
+      title="还没有选中的教案"
+      description="需求共创需要一个正在进行的教案，先在工作台里挑一个或新建一个。"
+    >
+      <el-button type="primary" @click="router.push('/')">返回工作台</el-button>
+    </AppEmptyState>
   </div>
 </template>
 
 <script setup>
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { Reading } from '@element-plus/icons-vue'
 import { useProjectStore } from '@/stores/project'
 import { useSessionStore } from '@/stores/session'
+import AppPageHeader from '@/components/common/AppPageHeader.vue'
+import AppEmptyState from '@/components/common/AppEmptyState.vue'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -67,20 +77,22 @@ onMounted(openActiveProject)
 </script>
 
 <style scoped>
-.requirements-entry {
-  max-width: 760px;
-  margin: 0 auto;
-}
+.entry-page { max-width: var(--container-reading); }
 
-.entry-state {
-  min-height: 260px;
-  display: grid;
-  align-items: center;
-}
-
-.state-actions {
+.entry-loading {
   display: flex;
-  gap: 8px;
-  margin-top: 12px;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.entry-hint {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.entry-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 </style>

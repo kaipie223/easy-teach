@@ -108,41 +108,45 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.stage-progress { display: grid; gap: 10px; }
+.stage-progress { display: grid; gap: var(--space-3); }
 
-.stage-progress-head { display: grid; gap: 6px; }
+.stage-progress-head { display: grid; gap: var(--space-2); }
 
-.stage-progress-bar :deep(.el-progress-bar__outer) { border-radius: 999px; }
+.stage-progress-bar :deep(.el-progress-bar__outer) { border-radius: var(--radius-pill); }
 
 .stage-progress-meta {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .stage-progress-label {
   min-width: 0;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
 }
 
 .stage-progress-numbers {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: var(--space-3);
   flex: none;
-  font-size: 13px;
-  color: #0b3fa8;
+  color: var(--text-brand);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
 }
 
-.stage-progress-elapsed { color: #94a3b8; font-weight: 400; }
+.stage-progress-elapsed {
+  color: var(--text-tertiary);
+  font-weight: var(--weight-regular);
+}
 
 /* 步骤条：已完成打勾、当前高亮、未开始置灰 */
 .stage-progress-steps {
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -150,21 +154,25 @@ onBeforeUnmount(() => {
 
 .step {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: var(--space-5) minmax(0, 1fr);
+  gap: var(--space-2);
   align-items: center;
-  font-size: 12.5px;
-  line-height: 1.4;
-  color: #94a3b8;
+  color: var(--text-disabled);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
 }
 
-.step.is-done { color: #16a34a; }
-.step.is-current { color: #1463ff; font-weight: 600; }
+.step.is-done { color: var(--success-500); }
+
+.step.is-current {
+  color: var(--text-brand);
+  font-weight: var(--weight-semibold);
+}
 
 .step-marker {
   display: grid;
   place-items: center;
-  font-size: 13px;
+  font-size: var(--text-sm);
 }
 
 .step-dot {

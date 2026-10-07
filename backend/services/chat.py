@@ -22,7 +22,13 @@ async def create_chat_stream(
     db: DBSession,
     *,
     persist_user_message: bool = True,
+    opening: bool = False,
+    skip_field: str | None = None,
 ) -> StreamingResponse:
+    """``opening``：新会话的自动开场（老师还没说过话）—— 只邀请描述，不逐项逼问。
+
+    ``skip_field``：本轮是"这项先跳过"，要跳过的字段名（见 ChatRequest.skip_field）。
+    """
     previous_messages = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == session.session_id)
@@ -80,6 +86,8 @@ async def create_chat_stream(
                 history=history,
                 db=db,
                 session=current_session,
+                opening=opening,
+                skip_field=skip_field,
             ):
                 if event.event_type is not MessageType.DELTA:
                     db.add(

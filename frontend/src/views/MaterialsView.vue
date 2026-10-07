@@ -1,15 +1,9 @@
 <template>
   <div class="page-stack">
-    <header class="page-header">
-      <div>
-        <h1>资料中心</h1>
-        <p>上传参考资料，查看解析状态，并将证据片段绑定到教学生成流程。</p>
-      </div>
-      <div v-if="selectedProject" class="project-context-display">
-        <span>当前项目</span>
-        <strong>{{ selectedProject.title }}</strong>
-      </div>
-    </header>
+    <AppPageHeader
+      title="资料中心"
+      subtitle="上传参考资料，查看解析状态，并把证据片段绑定到教学流程。（当前教案见上方流程条）"
+    />
 
     <el-alert
       v-if="pageError"
@@ -26,11 +20,14 @@
       </template>
     </el-alert>
 
-    <el-empty v-if="!loadingProjects && !selectedProjectId" description="请先从工作台选择一个项目">
-      <el-button type="primary" @click="go('/')">
-        返回工作台
-      </el-button>
-    </el-empty>
+    <AppEmptyState
+      v-if="!loadingProjects && !selectedProjectId"
+      :icon="FolderOpened"
+      title="还没有选中的教案"
+      description="资料是按教案归档的，先在工作台挑一个或新建一个。"
+    >
+      <el-button type="primary" @click="go('/')">返回工作台</el-button>
+    </AppEmptyState>
 
     <template v-else>
       <section class="section-card">
@@ -110,60 +107,65 @@
         </div>
 
         <el-skeleton v-if="loadingMaterials" :rows="5" animated />
-        <el-empty v-else-if="!materials.length" description="当前项目还没有参考资料">
+        <AppEmptyState
+          v-else-if="!materials.length"
+          :icon="UploadFilled"
+          title="这一版还没有参考资料"
+          description="上传 PDF、Word 或 PPT，解析后会把可引用的证据片段挂到这节课上。"
+        >
           <el-button type="primary" @click="openFilePicker">
             <el-icon><UploadFilled /></el-icon>
             上传第一份资料
           </el-button>
-        </el-empty>
-        <div v-else class="table-wrap">
-          <table class="data-table materials-table">
-            <thead>
-              <tr>
-                <th>文件名</th>
-                <th>类型</th>
-                <th>大小</th>
-                <th>解析状态</th>
-                <th>资料用途</th>
-                <th>作用范围</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="material in materials" :key="material.material_id">
-                <td>
-                  <span class="material-name" :title="material.original_name">
-                    <el-icon><Document /></el-icon>
-                    <span class="material-name-text">{{ material.original_name }}</span>
-                  </span>
-                  <span v-if="material.error_message" class="material-error">
-                    {{ material.error_message }}
-                  </span>
-                </td>
-                <td>{{ fileTypeLabel(material.file_type) }}</td>
-                <td>{{ formatBytes(material.size_bytes) }}</td>
-                <td>
-                  <!-- 后端按资料类型给出真实阶段（图片多一步视觉识别，视频多一步转录解析） -->
-                  <StageProgress
-                    v-if="materialIsParsing(material)"
-                    class="material-progress"
-                    :percent="material.stage_percent"
-                    :label="material.stage_label || materialStatusLabel(material.status, material.file_type)"
-                    :steps="material.stages"
-                    :current="material.stage"
-                    :started-at="material.stage_started_at"
-                  />
-                  <div v-else class="progress-track">
-                    <div
-                      :class="['progress-fill', material.status === 'processing' ? 'loading' : '']"
-                      :style="{ width: `${materialProgress(material)}%` }"
-                    />
-                  </div>
-                  <span :class="['status-pill', materialStatusClass(material.status)]">
-                    {{ materialStatusLabel(material.status, material.file_type) }}
-                  </span>
-                </td>
-                <td>
+        </AppEmptyState>
+        <ul v-else class="material-list motion-stagger">
+          <li v-for="material in materials" :key="material.material_id" class="material-row">
+            <span class="row-mark" :class="`is-${material.file_type}`" aria-hidden="true">
+              <el-icon><component :is="fileTypeIcon(material.file_type)" /></el-icon>
+            </span>
+
+            <div class="material-main">
+              <div class="material-heading">
+                <strong class="material-name-text" :title="material.original_name">
+                  {{ material.original_name }}
+                </strong>
+                <span :class="['status-pill', materialStatusClass(material.status)]">
+                  {{ materialStatusLabel(material.status, material.file_type) }}
+                </span>
+              </div>
+
+              <p class="material-meta">
+                <span>{{ fileTypeLabel(material.file_type) }}</span>
+                <span class="dot" aria-hidden="true">·</span>
+                <span class="text-tabular">{{ formatBytes(material.size_bytes) }}</span>
+              </p>
+
+              <p v-if="material.error_message" class="material-error">
+                {{ material.error_message }}
+              </p>
+
+              <!-- 后端按资料类型给出真实阶段（图片多一步视觉识别，视频多一步转录解析） -->
+              <StageProgress
+                v-if="materialIsParsing(material)"
+                class="material-progress"
+                :percent="material.stage_percent"
+                :label="material.stage_label || materialStatusLabel(material.status, material.file_type)"
+                :steps="material.stages"
+                :current="material.stage"
+                :started-at="material.stage_started_at"
+              />
+              <!-- 只在"确实在推进"时才画进度条：失败态给满格进度条会与状态胶囊自相矛盾 -->
+              <div v-else-if="materialIsInFlight(material)" class="progress-track">
+                <div
+                  :class="['progress-fill', material.status === 'processing' ? 'loading' : '']"
+                  :style="{ width: `${materialProgress(material)}%` }"
+                />
+              </div>
+
+              <!-- 用途与作用范围：原本各占一列，窄屏必然横向滚动，改成行内两组控件 -->
+              <div class="material-bindings">
+                <label class="binding-field">
+                  <span class="binding-label">用途</span>
                   <el-select
                     v-model="material.usageTypes"
                     class="usage-select"
@@ -183,8 +185,9 @@
                       :value="option.value"
                     />
                   </el-select>
-                </td>
-                <td>
+                </label>
+                <label class="binding-field">
+                  <span class="binding-label">作用范围</span>
                   <el-select
                     v-model="material.targetType"
                     class="scope-select"
@@ -199,25 +202,35 @@
                       :value="option.value"
                     />
                   </el-select>
-                </td>
-                <td class="link-actions material-actions">
-                  <el-button link type="primary" @click="showDetails(material)">
-                    <el-icon><View /></el-icon>
-                    详情
-                  </el-button>
-                  <el-button link type="primary" @click="openSource(material)">
-                    <el-icon><Download /></el-icon>
-                    原文件
-                  </el-button>
-                  <el-button link type="danger" @click="removeMaterial(material)">
-                    <el-icon><Delete /></el-icon>
-                    删除
-                  </el-button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+                </label>
+              </div>
+            </div>
+
+            <div class="row-actions">
+              <el-button text @click="showDetails(material)">
+                <el-icon><View /></el-icon>
+                详情
+              </el-button>
+              <!-- 删除是破坏性操作：收进"更多"，避免与常规操作并排被误点 -->
+              <el-dropdown trigger="click" @command="command => handleRowCommand(command, material)">
+                <el-button text aria-label="更多操作">
+                  <el-icon><MoreFilled /></el-icon>
+                </el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item command="source">
+                      <el-icon><Download /></el-icon>
+                      打开原文件
+                    </el-dropdown-item>
+                    <el-dropdown-item divided command="delete">
+                      <span class="danger-item">删除资料</span>
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+          </li>
+        </ul>
       </section>
 
       <section class="section-card">
@@ -228,7 +241,9 @@
           </div>
           <span class="section-context">{{ evidenceSnips.length }} 条有效证据</span>
         </div>
-        <el-empty v-if="!evidenceSnips.length" description="解析完成后，证据片段会显示在这里" />
+        <p v-if="!evidenceSnips.length" class="list-hint">
+          解析完成后，可引用的证据片段会显示在这里。
+        </p>
         <div v-else class="evidence-list">
           <article v-for="evidence in evidenceSnips" :key="evidence.evidence_id" class="evidence-card">
             <div class="evidence-meta">
@@ -286,7 +301,7 @@
           </p>
           <pre>{{ JSON.stringify(selectedMaterial.analysis.result_json || {}, null, 2) }}</pre>
         </div>
-        <el-empty v-else description="暂无解析详情" />
+        <p v-else class="list-hint">这份资料还没有解析详情。</p>
       </template>
       <template #footer>
         <el-button @click="detailsVisible = false">关闭</el-button>
@@ -309,12 +324,15 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Delete,
   Document,
   Download,
   FolderOpened,
+  Monitor,
+  MoreFilled,
+  Picture,
   Refresh,
   UploadFilled,
+  VideoCamera,
   View,
 } from '@element-plus/icons-vue'
 import {
@@ -328,6 +346,8 @@ import {
   uploadProjectMaterial,
 } from '@/api'
 import StageProgress from '@/components/progress/StageProgress.vue'
+import AppPageHeader from '@/components/common/AppPageHeader.vue'
+import AppEmptyState from '@/components/common/AppEmptyState.vue'
 import { SSEClient } from '@/utils/sse'
 import { useSessionStore } from '@/stores/session'
 import { useProjectStore } from '@/stores/project'
@@ -568,6 +588,25 @@ async function openSource(material) {
   }
 }
 
+/** 文件类型图标：与列表里的类型色标配合，让同类资料一眼可辨。 */
+const FILE_TYPE_ICONS = {
+  pdf: Document,
+  word: Document,
+  ppt: Monitor,
+  image: Picture,
+  video: VideoCamera,
+}
+
+function fileTypeIcon(fileType) {
+  return FILE_TYPE_ICONS[fileType] || Document
+}
+
+/** 行内"更多"菜单：破坏性操作与常规操作分开。 */
+function handleRowCommand(command, material) {
+  if (command === 'source') openSource(material)
+  if (command === 'delete') removeMaterial(material)
+}
+
 /** 这个猜测的百分比只在解析还没真正开始时兜底用；解析中一律用后端真实阶段。 */
 function materialProgress(material) {
   return {
@@ -583,6 +622,11 @@ function materialProgress(material) {
 /** 解析中：后端已经按资料类型给出了阶段，此时不该再用前端猜的百分比。 */
 function materialIsParsing(material) {
   return material.status === 'processing' && Boolean(material.stage)
+}
+
+/** 还在推进中（上传完成但未出结果）：这时才有必要显示进度条。 */
+function materialIsInFlight(material) {
+  return ['uploaded', 'queued', 'processing'].includes(material.status)
 }
 
 function materialStatusLabel(status, fileType) {
@@ -709,42 +753,42 @@ function go(path) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .project-context-display {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   min-width: 0;
 }
 
 .project-context-display span,
 .upload-options label {
-  color: #475569;
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
   font-weight: 700;
 }
 
 .project-context-display strong {
   max-width: 280px;
   overflow: hidden;
-  color: #1463ff;
+  color: var(--text-brand);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .section-context {
-  color: #64748b;
-  font-size: 13px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
   white-space: nowrap;
 }
 
 .upload-options {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   max-width: 620px;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-3);
 }
 
 .visually-hidden {
@@ -752,7 +796,7 @@ function go(path) {
   width: 1px;
   height: 1px;
   padding: 0;
-  margin: -1px;
+  margin: calc(var(--space-1) * -1);
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
@@ -763,21 +807,21 @@ function go(path) {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: var(--space-3);
   min-height: 102px;
-  padding: 16px 20px;
-  border: 1px dashed #9fb1c9;
-  border-radius: 8px;
-  background: #fbfdff;
-  color: #334155;
+  padding: var(--space-4) var(--space-5);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--neutral-25);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .upload-zone:hover,
 .upload-zone:focus-visible {
-  border-color: #1463ff;
-  background: #f5f9ff;
+  border-color: var(--border-brand);
+  background: var(--brand-50);
   outline: none;
 }
 
@@ -788,86 +832,156 @@ function go(path) {
 
 .upload-zone > div {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   flex: 1;
 }
 
 .upload-zone strong {
-  color: #0f172a;
+  color: var(--text-primary);
 }
 
 .upload-zone span {
-  color: #64748b;
-  font-size: 13px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
 }
 
 .upload-progress,
 .upload-error {
-  margin-top: 14px;
+  margin-top: var(--space-3);
 }
 
-.materials-table {
-  min-width: 1080px;
+/* ── 资料列表：列表行取代表格（7 列表格在窄屏只能横向滚动） ─── */
+.material-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.material-name {
+.material-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: start;
+  padding: var(--space-4) var(--space-2);
+  border-bottom: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.material-row:last-child { border-bottom: 0; }
+
+.material-row:hover { background: var(--neutral-50); }
+
+/* 类型色标：只表示文件类型，不参与主色体系 */
+.row-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-lg);
+  background: var(--bg-surface-sunken);
+  font-size: var(--text-lg);
+}
+
+.row-mark.is-pdf { color: var(--file-pdf); }
+.row-mark.is-word { color: var(--file-word); }
+.row-mark.is-ppt { color: var(--file-ppt); }
+.row-mark.is-image { color: var(--file-image); }
+.row-mark.is-video { color: var(--file-video); }
+
+.material-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.material-heading {
   display: flex;
   align-items: center;
-  gap: 8px;
-  max-width: 220px;
-  color: #0f172a;
-  font-weight: 700;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .material-name-text {
+  min-width: 0;
   overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.material-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.dot { color: var(--neutral-400); }
+
 .material-error {
-  display: block;
-  max-width: 240px;
-  margin-top: 5px;
-  color: #b91c1c;
-  font-size: 12px;
-  line-height: 1.4;
+  color: var(--danger-600);
+  font-size: var(--text-xs);
+  line-height: var(--leading-snug);
 }
 
-.usage-select {
-  width: 190px;
+/* 用途 / 作用范围：行内两组，窄屏自动换行 */
+.material-bindings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  margin-top: var(--space-1);
 }
 
-.scope-select {
-  width: 130px;
+.binding-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.material-actions {
-  gap: 6px;
+.binding-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
 
-.material-actions .el-button {
-  padding: 0 4px;
+.usage-select { width: 190px; }
+
+.scope-select { width: 130px; }
+
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  justify-content: flex-end;
 }
+
+.danger-item { color: var(--danger-600); }
 
 .evidence-list {
   display: grid;
-  gap: 10px;
+  gap: var(--space-2);
 }
 
 .evidence-card {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(0, 1fr) max-content;
   align-items: center;
-  gap: 18px;
+  gap: var(--space-4);
   min-height: 104px;
-  padding: 16px 18px;
+  padding: var(--space-4) var(--space-4);
 }
 
 .evidence-meta {
   display: grid;
   align-self: start;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .evidence-meta strong {
@@ -880,11 +994,11 @@ function go(path) {
 .locator-badge {
   justify-self: start;
   flex: 0 0 auto;
-  padding: 3px 7px;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  color: #475569;
-  font-size: 12px;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
   font-weight: 600;
   white-space: nowrap;
 }
@@ -893,7 +1007,7 @@ function go(path) {
   display: -webkit-box;
   overflow: hidden;
   margin: 0;
-  color: #475569;
+  color: var(--text-secondary);
   line-height: 1.65;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
@@ -902,50 +1016,50 @@ function go(path) {
 .evidence-actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
+  gap: var(--space-2);
   white-space: nowrap;
 }
 
 .detail-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 18px;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
 }
 
 .detail-summary > div {
   display: grid;
-  gap: 6px;
+  gap: var(--space-1);
   min-width: 0;
 }
 
 .detail-summary span {
-  color: #64748b;
-  font-size: 13px;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
 }
 
 .detail-summary strong {
-  color: #0f172a;
+  color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
 .analysis-content {
-  margin-top: 18px;
+  margin-top: var(--space-4);
 }
 
 .analysis-content h3 {
-  margin: 0 0 8px;
-  color: #0f172a;
-  font-size: 16px;
+  margin: 0 0 var(--space-2);
+  color: var(--text-primary);
+  font-size: var(--text-md);
 }
 
 .analysis-text {
   max-height: 220px;
   overflow: auto;
-  padding: 12px;
-  border: 1px solid #e4e9f2;
-  border-radius: 6px;
-  color: #334155;
+  padding: var(--space-3);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   line-height: 1.7;
   white-space: pre-wrap;
 }
@@ -953,21 +1067,61 @@ function go(path) {
 .analysis-content pre {
   max-height: 180px;
   overflow: auto;
-  padding: 12px;
-  background: #f8fafc;
-  color: #475569;
-  font-size: 12px;
+  padding: var(--space-3);
+  background: var(--bg-surface-sunken);
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 720px) {
-  .project-context-display {
-    width: 100%;
-    min-width: 0;
-    align-items: flex-start;
+@media (max-width: 768px) {
+  /* 窄屏：类型标与文件名同排，操作换到下一行右对齐 */
+  .material-row {
+    grid-template-columns: 32px minmax(0, 1fr);
+    grid-template-areas:
+      'mark main'
+      'mark actions';
+    gap: var(--space-2) var(--space-3);
+  }
+
+  .row-mark {
+    grid-area: mark;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    font-size: var(--text-base);
+  }
+
+  .material-main { grid-area: main; }
+
+  .row-actions {
+    grid-area: actions;
+    justify-content: flex-start;
+  }
+
+  .row-actions :deep(.el-button) {
+    min-width: 36px;
+    height: 36px;
+  }
+
+  /* 用途与范围在窄屏各占一行，避免两个下拉挤在一起 */
+  .material-bindings {
     flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .binding-field {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .usage-select,
+  .scope-select {
+    flex: 1;
+    width: auto;
+    min-width: 0;
   }
 
   .upload-zone {
@@ -985,7 +1139,7 @@ function go(path) {
 
   .evidence-card {
     grid-template-columns: 1fr;
-    gap: 10px;
+    gap: var(--space-2);
   }
 
   .evidence-actions {

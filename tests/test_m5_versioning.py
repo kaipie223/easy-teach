@@ -43,6 +43,8 @@ def create_project_with_plan(client, headers):
         f"/api/v1/projects/{project_id}/brief",
         headers=headers,
         json={
+            "subject": "物理",
+            "grade": "初二",
             "teaching_goal": "理解 TCP 三次握手",
             "target_audience": "大一新生",
             "duration_minutes": 45,
@@ -261,6 +263,59 @@ def test_exports_are_bound_to_version_and_idempotent(client, monkeypatch):
     )
     assert not_ready.status_code == 409
     assert not_ready.json()["error"]["code"] == "EXPORT_NOT_READY"
+
+
+def test_completed_export_is_rendered_again_instead_of_reused(
+    client, db_session_factory, monkeypatch
+):
+    """已完成的导出必须重新渲染，而不是把旧文件还给教师。
+
+    实测事故：配色换成学术蓝之后点"重新导出"，拿到的仍是旧的亮蓝文件 —— 复用判定把
+    completed 也算进去了，于是新样式永远出不来，看起来就是"改了却没任何变化"。
+    只有**正在跑**的记录才该复用（连点两次不并行渲染两份）。
+    """
+    from backend.models.versioning import ExportRecord
+
+    monkeypatch.setattr("backend.routers.courseware.search_sync", empty_rag)
+    monkeypatch.setattr(
+        "backend.services.orchestrator.Orchestrator.run_generation",
+        lambda self, task_id, **kwargs: None,
+    )
+    headers = register(client, "m5-export-rerender@example.com")
+    project_id, _, plan_id = create_project_with_plan(client, headers)
+    version_id = client.post(
+        f"/api/v1/projects/{project_id}/generate",
+        headers=headers,
+        json={"plan_id": plan_id},
+    ).json()["artifact_version_id"]
+
+    first = client.post(
+        f"/api/v1/projects/{project_id}/exports",
+        headers=headers,
+        json={"artifact_version_id": version_id, "formats": ["pptx"]},
+    ).json()["exports"][0]
+
+    # 把它标成"已完成"（不跑真渲染器）：代表上一次导出的那份老文件
+    db = db_session_factory()
+    try:
+        record = (
+            db.query(ExportRecord).filter(ExportRecord.export_id == first["export_id"]).one()
+        )
+        record.status = "completed"
+        record.path = "/tmp/old.pptx"
+        db.commit()
+    finally:
+        db.close()
+
+    again = client.post(
+        f"/api/v1/projects/{project_id}/exports",
+        headers=headers,
+        json={"artifact_version_id": version_id, "formats": ["pptx"]},
+    )
+    assert again.status_code == 202, again.text
+    fresh = again.json()["exports"][0]
+    assert fresh["export_id"] != first["export_id"], "已完成的导出必须重新渲染，不能复用旧文件"
+    assert fresh["status"] in {"pending", "processing"}
 
 
 def test_four_completed_exports_can_be_downloaded(

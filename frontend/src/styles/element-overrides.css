@@ -1,0 +1,569 @@
+/**
+ * Element Plus 深度覆写 —— 必须在 element-plus/dist/index.css 之后引入。
+ *
+ * 只改 --el-color-primary 是不够的：EP 的 hover / disabled / plain / light 状态各自
+ * 从 --el-color-primary-light-N / -dark-2 取色，漏一个就会出现"两种蓝"。所以这里
+ * 先把变量成套接管，再对少数组件做结构性修正（输入框光晕、按钮质感、弹窗阴影等）。
+ */
+
+:root {
+  /* ── 主色：青蓝 #00C4B6，成套映射 EP 的明暗阶 ───────────── */
+  /* EP 组件的主色（勾选底、焦点环、激活态）：500 在白底只有 2.19:1，
+     700 达到 3:1 的图形类要求；纯文字场景另有 --text-brand（800）。 */
+  --el-color-primary: var(--brand-700);
+  --el-color-primary-light-3: var(--brand-400);
+  --el-color-primary-light-5: var(--brand-300);
+  --el-color-primary-light-7: var(--brand-200);
+  --el-color-primary-light-8: var(--brand-100);
+  --el-color-primary-light-9: var(--brand-50);
+  --el-color-primary-dark-2: var(--brand-700);
+
+  /* ── 语义色 ──────────────────────────────────────────── */
+  --el-color-success: var(--success-500);
+  --el-color-success-light-9: var(--success-50);
+  --el-color-warning: var(--warning-500);
+  --el-color-warning-light-9: var(--warning-50);
+  --el-color-danger: var(--danger-500);
+  --el-color-danger-light-9: var(--danger-50);
+  --el-color-error: var(--danger-500);
+  --el-color-error-light-9: var(--danger-50);
+  --el-color-info: var(--neutral-500);
+  --el-color-info-light-9: var(--neutral-100);
+
+  /* ── 文字 ────────────────────────────────────────────── */
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-secondary);
+  --el-text-color-secondary: var(--text-tertiary);
+  --el-text-color-placeholder: var(--text-disabled);
+  --el-text-color-disabled: var(--text-disabled);
+  --el-text-color-primary-hover: var(--text-primary);
+
+  /* ── 边框：极浅透明灰，禁止深色硬线 ────────────────────── */
+  --el-border-color: var(--border-default);
+  --el-border-color-light: var(--border-light);
+  --el-border-color-lighter: var(--border-hairline);
+  --el-border-color-extra-light: var(--border-hairline);
+  --el-border-color-hover: var(--neutral-300);
+  --el-border-color-darker: var(--border-strong);
+  --el-border-color-dark: var(--border-strong);
+
+  /* ── 填充与背景 ──────────────────────────────────────── */
+  --el-fill-color: var(--neutral-100);
+  --el-fill-color-light: var(--neutral-50);
+  --el-fill-color-lighter: var(--neutral-25);
+  --el-fill-color-blank: var(--bg-surface);
+  --el-fill-color-dark: var(--neutral-150);
+  --el-bg-color: var(--bg-surface);
+  --el-bg-color-page: var(--bg-page);
+  --el-bg-color-overlay: var(--bg-surface);
+  --el-mask-color: rgba(15, 23, 42, 0.45);
+
+  /* ── 阴影：Stripe 三层，禁掉 EP 的单层硬阴影 ───────────── */
+  --el-box-shadow: var(--shadow-card);
+  --el-box-shadow-light: var(--shadow-card);
+  --el-box-shadow-lighter: var(--shadow-card);
+  --el-box-shadow-dark: var(--shadow-overlay);
+
+  /* ── 圆角 / 字号 / 动效 ───────────────────────────────── */
+  --el-border-radius-base: var(--radius-md);
+  --el-border-radius-small: var(--radius-sm);
+  --el-border-radius-round: var(--radius-pill);
+  --el-font-size-base: var(--text-base);
+  --el-font-size-small: var(--text-sm);
+  --el-font-size-extra-small: var(--text-xs);
+  --el-font-size-medium: var(--text-md);
+  --el-font-size-large: var(--text-lg);
+  --el-transition-duration: var(--duration-base);
+  --el-transition-duration-fast: var(--duration-fast);
+}
+
+/* ── 排版基础 ───────────────────────────────────────────── */
+body {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text-primary);
+  background: var(--bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.el-button,
+.el-input,
+.el-select,
+.el-textarea {
+  font-family: inherit;
+}
+
+/* ── 按钮：主按钮纯色白字 + 悬浮上浮；次级浅灰无边框 ──────── */
+.el-button {
+  --el-button-border-color: var(--border-default);
+  --el-button-hover-border-color: var(--neutral-300);
+  border-radius: var(--radius-md);
+  font-weight: var(--weight-medium);
+  transition: transform var(--duration-fast) var(--ease-standard),
+    box-shadow var(--duration-base) var(--ease-standard),
+    background-color var(--duration-base) var(--ease-standard),
+    border-color var(--duration-base) var(--ease-standard),
+    color var(--duration-base) var(--ease-standard);
+}
+
+/* 实心主按钮：底色用 800/900 而不是 500/600。
+   白字配 brand-500 只有 2.19:1（hover 600 也才 2.71），全班投影都看不清；
+   800 = 4.52:1、900 = 6.31:1，色相不变只是加深。 */
+.el-button--primary {
+  background: var(--brand-800);
+  border-color: var(--brand-800);
+  color: var(--text-inverse);
+  box-shadow: none;
+}
+
+.el-button--primary:hover,
+.el-button--primary:focus-visible {
+  background: var(--brand-900);
+  border-color: var(--brand-900);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-raised);
+}
+
+.el-button--primary:active {
+  background: var(--brand-900);
+  border-color: var(--brand-900);
+  transform: translateY(0);
+  box-shadow: var(--shadow-card);
+}
+
+/* 链接型主按钮走文字色：--el-color-primary 是图形色，白底上只有 2.19:1 */
+.el-button--primary.is-link,
+.el-button--primary.is-text {
+  color: var(--text-brand);
+}
+
+.el-button--primary.is-link:hover,
+.el-button--primary.is-text:hover {
+  color: var(--brand-900);
+}
+
+/* 次级按钮：浅灰底 + 深字，无边框 */
+.el-button--default:not(.is-text):not(.is-link):not(.is-plain):not(.is-circle) {
+  background: var(--neutral-100);
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+.el-button--default:not(.is-text):not(.is-link):not(.is-plain):not(.is-circle):hover {
+  background: var(--neutral-150);
+  border-color: transparent;
+  color: var(--text-primary);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-card);
+}
+
+.el-button--default:not(.is-text):not(.is-link):not(.is-plain):not(.is-circle):active {
+  background: var(--neutral-200);
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+/* 圆角图标按钮与文字按钮 */
+.el-button.is-circle {
+  border-radius: var(--radius-pill);
+}
+
+.el-button.is-text,
+.el-button.is-link {
+  padding: 0 var(--space-2);
+  color: var(--text-secondary);
+}
+
+.el-button.is-text:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.el-button.is-link {
+  color: var(--text-brand);
+  font-weight: var(--weight-medium);
+}
+
+.el-button.is-link:hover {
+  color: var(--brand-800);
+}
+
+.el-button.is-link.el-button--danger {
+  color: var(--danger-600);
+}
+
+.el-button.is-link.el-button--danger:hover {
+  color: var(--danger-500);
+}
+
+.el-button.is-disabled,
+.el-button.is-disabled:hover {
+  background: var(--neutral-100);
+  border-color: transparent;
+  color: var(--text-disabled);
+  box-shadow: none;
+  transform: none;
+}
+
+.el-button--large {
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-6);
+}
+
+/* ── 输入类：去掉厚重外框，Focus 用主色光晕 ─────────────── */
+.el-input__wrapper,
+.el-textarea__inner,
+.el-select__wrapper {
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 0 0 1px var(--border-light);
+  transition: box-shadow var(--duration-base) var(--ease-standard),
+    background-color var(--duration-base) var(--ease-standard);
+}
+
+.el-input__wrapper:hover,
+.el-textarea__inner:hover,
+.el-select__wrapper:hover {
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+}
+
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus,
+.el-select__wrapper.is-focused {
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px var(--border-brand), var(--ring-brand);
+}
+
+.el-input.is-disabled .el-input__wrapper,
+.el-textarea.is-disabled .el-textarea__inner {
+  background: var(--neutral-100);
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
+}
+
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: var(--text-disabled);
+}
+
+.el-form-item__label {
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+  font-size: var(--text-sm);
+  padding-bottom: var(--space-2);
+}
+
+.el-form-item__error {
+  color: var(--danger-600);
+  padding-top: var(--space-1);
+  font-size: var(--text-xs);
+}
+
+/* ── 弹窗 / 抽屉：大圆角 + 浮层阴影 + 明确遮罩 ──────────── */
+.el-dialog {
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-6);
+}
+
+.el-dialog__header {
+  padding: 0 0 var(--space-4);
+  margin-right: 0;
+}
+
+.el-dialog__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
+  color: var(--text-primary);
+}
+
+.el-dialog__body {
+  padding: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
+}
+
+.el-dialog__footer {
+  padding: var(--space-6) 0 0;
+}
+
+.el-drawer {
+  box-shadow: var(--shadow-overlay);
+}
+
+.el-message-box {
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-overlay);
+  padding: var(--space-6);
+  border: 1px solid var(--border-hairline);
+}
+
+.el-message-box__title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+
+.el-message-box__content {
+  padding: var(--space-4) 0;
+  color: var(--text-secondary);
+}
+
+/* ── 标签：tinted pill，替代默认方块灰 ──────────────────── */
+.el-tag {
+  border-radius: var(--radius-pill);
+  border-color: transparent;
+  background: var(--neutral-100);
+  color: var(--text-secondary);
+  font-weight: var(--weight-medium);
+  padding: 0 var(--space-3);
+}
+
+.el-tag--primary {
+  background: var(--brand-50);
+  color: var(--text-brand);
+}
+
+.el-tag--success {
+  background: var(--success-50);
+  color: var(--success-600);
+}
+
+.el-tag--warning {
+  background: var(--warning-50);
+  color: var(--warning-600);
+}
+
+.el-tag--danger {
+  background: var(--danger-50);
+  color: var(--danger-600);
+}
+
+.el-tag--info {
+  background: var(--neutral-100);
+  color: var(--text-tertiary);
+}
+
+/* ── 表格：去灰表头与粗线，改 12px 标签感 ───────────────── */
+.el-table {
+  --el-table-border-color: var(--border-hairline);
+  --el-table-header-bg-color: transparent;
+  --el-table-row-hover-bg-color: var(--neutral-50);
+  --el-table-text-color: var(--text-secondary);
+  --el-table-header-text-color: var(--text-tertiary);
+  font-size: var(--text-base);
+  background: transparent;
+}
+
+.el-table th.el-table__cell {
+  background: transparent;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border-hairline) !important;
+}
+
+.el-table td.el-table__cell {
+  border-bottom: 1px solid var(--border-hairline);
+  padding: var(--space-3) 0;
+}
+
+.el-table__inner-wrapper::before {
+  display: none;
+}
+
+/* ── 分页 / 开关 / 单选复选 / 进度：全部接主色 ───────────── */
+.el-pagination {
+  --el-pagination-button-bg-color: transparent;
+  --el-pagination-hover-color: var(--brand-600);
+  font-weight: var(--weight-medium);
+  justify-content: flex-end;
+}
+
+.el-pagination .el-pager li,
+.el-pagination button {
+  border-radius: var(--radius-sm);
+  min-width: 32px;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.el-pagination .el-pager li.is-active {
+  background: var(--bg-active);
+  color: var(--text-brand);
+  font-weight: var(--weight-semibold);
+}
+
+/* 勾选/开关这类"白图形压在品牌底"的控件：500 底配白勾只有 2.19:1，
+   一律改用 800（4.52:1）；悬停描边按 3:1 要求用 --border-brand。 */
+.el-switch.is-checked .el-switch__core {
+  background: var(--brand-800);
+  border-color: var(--brand-800);
+}
+
+.el-radio__input.is-checked .el-radio__inner,
+.el-checkbox__input.is-checked .el-checkbox__inner,
+.el-checkbox__input.is-indeterminate .el-checkbox__inner {
+  background: var(--brand-800);
+  border-color: var(--brand-800);
+}
+
+.el-radio__input.is-checked + .el-radio__label,
+.el-checkbox__input.is-checked + .el-checkbox__label {
+  color: var(--text-primary);
+}
+
+.el-radio__inner:hover,
+.el-checkbox__inner:hover {
+  border-color: var(--border-brand);
+}
+
+.el-radio-button.is-active .el-radio-button__inner {
+  background: var(--brand-800);
+  border-color: var(--brand-800);
+  color: var(--text-inverse);
+  box-shadow: none;
+}
+
+.el-progress-bar__inner {
+  background: var(--gradient-brand);
+}
+
+.el-progress-bar__outer {
+  background: var(--neutral-150);
+}
+
+/* ── 消息 / 通知：轻、圆、无重阴影 ──────────────────────── */
+.el-message,
+.el-notification {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  box-shadow: var(--shadow-raised);
+}
+
+.el-message {
+  padding: var(--space-3) var(--space-4);
+}
+
+.el-notification__title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+}
+
+/* ── 提示条 / 空态 / 骨架 ───────────────────────────────── */
+.el-alert {
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  align-items: flex-start;
+}
+
+.el-alert--error.is-light {
+  background: var(--danger-50);
+  color: var(--danger-600);
+  border: 1px solid rgba(220, 38, 38, 0.14);
+}
+
+.el-alert--success.is-light {
+  background: var(--success-50);
+  color: var(--success-600);
+  border: 1px solid rgba(15, 157, 118, 0.16);
+}
+
+/* 警告提示条同理：-500 配 -50 只有 2.97:1，文字必须走 -600 */
+.el-alert--warning.is-light {
+  color: var(--warning-600);
+}
+
+.el-alert--warning.is-light .el-alert__title {
+  color: var(--warning-600);
+}
+
+.el-alert__title {
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  line-height: var(--leading-snug);
+}
+
+.el-alert__description {
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  margin-top: var(--space-1);
+}
+
+.el-empty {
+  padding: var(--space-10) var(--space-6);
+}
+
+.el-empty__description p {
+  color: var(--text-tertiary);
+  font-size: var(--text-base);
+}
+
+.el-skeleton__item {
+  background: linear-gradient(
+    90deg,
+    var(--neutral-100) 25%,
+    var(--neutral-150) 37%,
+    var(--neutral-100) 63%
+  );
+  border-radius: var(--radius-sm);
+}
+
+/* ── 其它零散组件 ──────────────────────────────────────── */
+.el-tooltip__popper.is-dark,
+.el-popper.is-dark {
+  background: var(--neutral-900);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+  padding: var(--space-2) var(--space-3);
+}
+
+.el-popper.is-light {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-hairline);
+  box-shadow: var(--shadow-raised);
+}
+
+.el-dropdown-menu {
+  padding: var(--space-2);
+}
+
+.el-dropdown-menu__item {
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+}
+
+.el-dropdown-menu__item:not(.is-disabled):hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.el-avatar {
+  background: var(--neutral-100);
+  color: var(--text-tertiary);
+}
+
+.el-segmented {
+  --el-segmented-bg-color: var(--neutral-100);
+  --el-segmented-item-selected-bg-color: var(--bg-surface);
+  --el-segmented-item-selected-color: var(--text-brand);
+  border-radius: var(--radius-md);
+  padding: 2px;
+}
+
+.el-segmented__item-selected {
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-card);
+}
+
+.el-steps .el-step__title.is-process {
+  color: var(--text-primary);
+  font-weight: var(--weight-semibold);
+}
+
+.el-steps .el-step__head.is-process {
+  color: var(--text-brand);
+  border-color: var(--text-brand);
+}

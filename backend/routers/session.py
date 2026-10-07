@@ -167,4 +167,6 @@ async def start_session(
         bootstrap_message,
         db,
         persist_user_message=False,
+        # 开场只邀请老师描述，不逐项逼问（以前一上来就是"哪个学段？"的四选一）
+        opening=True,
     )

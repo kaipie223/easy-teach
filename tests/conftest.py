@@ -43,7 +43,7 @@ def client(db_session_factory):
 def stub_intent_analyzer(monkeypatch):
     """Keep chat workflow tests deterministic and isolated from paid model calls."""
 
-    def analyze(_self, _session_id, messages):
+    def analyze(_self, _session_id, messages, _context_block=""):
         teaching_goal = messages[-1].get("content", "") if messages else ""
         return IntentResult(
             teaching_goal=teaching_goal,
@@ -52,7 +52,7 @@ def stub_intent_analyzer(monkeypatch):
             is_complete=False,
         )
 
-    def analyze_stream(_self, _session_id, messages):
+    def analyze_stream(_self, _session_id, messages, _context_block=""):
         result = analyze(_self, _session_id, messages)
         yield ("text", "请补充授课对象和核心知识点。")
         yield ("result", (result, None))

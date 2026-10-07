@@ -92,6 +92,15 @@ def create_export_records(
     formats: list[ExportFormat],
     force: bool = False,
 ) -> list[ExportRecord]:
+    """为这一版登记导出记录。
+
+    只复用**正在跑**的那条（pending / processing）：连点两次不该并行渲染两份。
+
+    已完成的**一律重新渲染**并新建一条记录。导出是本地渲染（几秒、不花模型额度），
+    而复用旧文件的代价是"渲染器或主题改了，教师却永远只能下到旧文件" —— 这个坑真实
+    发生过：配色换成学术蓝之后，导出仍然拿到旧的亮蓝，看起来就是"改了没生效"。
+    历史记录在界面上按格式折叠，不会堆成流水账。
+    """
     records: list[ExportRecord] = []
     for export_format in dict.fromkeys(item.value for item in formats):
         if not force:
@@ -100,7 +109,7 @@ def create_export_records(
                 .filter(
                     ExportRecord.artifact_version_id == version.artifact_version_id,
                     ExportRecord.format == export_format,
-                    ExportRecord.status.in_(("pending", "processing", "completed")),
+                    ExportRecord.status.in_(("pending", "processing")),
                 )
                 .order_by(ExportRecord.created_at.desc())
                 .first()

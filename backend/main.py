@@ -30,6 +30,7 @@ from backend.routers import (
     projects,
     revisions,
     session,
+    slide_theme,
     speech,
     upload,
 )
@@ -153,6 +154,8 @@ app.include_router(knowledge.router, prefix="/api/v1/knowledge", tags=["Knowledg
 app.include_router(generate.router, prefix="/api/v1", tags=["Generation"])
 app.include_router(export.router, prefix="/api/v1", tags=["Export"])
 app.include_router(speech.router, prefix="/api/v1/speech", tags=["Speech"])
+# 幻灯片主题：前端启动时拉一次，写成 CSS 变量，预览与导出的 PPTX 由此同源
+app.include_router(slide_theme.router, prefix="/api/v1", tags=["SlideTheme"])
 
 
 @app.get("/", response_model=HealthResponse)
