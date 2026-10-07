@@ -37,7 +37,7 @@
         <div class="section-header">
           <div>
             <h2>上传参考资料</h2>
-            <p>PDF、Word 和 PPT 会提取证据；图片仅保存原文件，视觉与视频解析暂未启用。</p>
+            <p>PDF、Word、PPT 和视频会异步提取证据；图片当前仅保存原文件。</p>
           </div>
           <el-button :loading="loadingMaterials" text @click="loadCurrentProject()">
             <el-icon><Refresh /></el-icon>
@@ -60,7 +60,7 @@
           ref="fileInput"
           class="visually-hidden"
           type="file"
-          accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.gif,.bmp,.webp"
+          accept=".pdf,.docx,.pptx,.png,.jpg,.jpeg,.gif,.bmp,.webp,.mp4,.mov,.avi,.mkv"
           @change="handleFileChange"
         />
         <div
@@ -76,7 +76,7 @@
           <el-icon :size="28"><UploadFilled /></el-icon>
           <div>
             <strong>{{ uploading ? '正在上传资料' : '选择要上传的资料' }}</strong>
-            <span>单文件不超过 50 MB；当前支持 PDF、Word、PPT 和图片原文件</span>
+            <span>单文件不超过 50 MB；视频支持 MP4、MOV、AVI、MKV</span>
           </div>
           <el-button type="primary" :loading="uploading" :disabled="!selectedProjectId">
             <el-icon><FolderOpened /></el-icon>
@@ -89,6 +89,13 @@
           :percentage="uploadProgress"
           :format="progressFormat"
           :status="uploadProgress === 100 ? 'success' : undefined"
+        />
+        <el-alert
+          title="视频上传后会排队解析；第一阶段只理解画面，不转写教师讲解音轨。"
+          type="info"
+          show-icon
+          :closable="false"
+          class="video-note"
         />
         <el-alert
           v-if="uploadError"
@@ -456,6 +463,18 @@ async function handleFileChange(event) {
 async function uploadMaterial(file) {
   if (!selectedProjectId.value || uploading.value) return
   uploadError.value = ''
+  if (
+    isVideoFile(file)
+    && materials.value.some(material => (
+      material.file_type === 'video'
+      && material.original_name === file.name
+      && Number(material.size_bytes) === Number(file.size)
+      && material.status !== 'archived'
+    ))
+  ) {
+    uploadError.value = '同一视频已在当前项目中，请查看现有的排队或解析状态。'
+    return
+  }
   uploading.value = true
   uploadProgress.value = 0
   try {
@@ -480,9 +499,13 @@ async function uploadMaterial(file) {
     uploadProgress.value = 100
     uploadNote.value = ''
     await loadCurrentProject()
-    ElMessage.success(
-      isImageFile(file) ? '图片已保存，视觉识别暂未启用' : '资料已上传并完成解析',
-    )
+    if (isVideoFile(file)) {
+      ElMessage.success('视频已上传并进入解析队列；当前仅分析画面，不包含音轨讲解')
+    } else if (isImageFile(file)) {
+      ElMessage.success('图片已保存，视觉识别暂未启用')
+    } else {
+      ElMessage.success('资料已上传并完成解析')
+    }
   } catch (error) {
     uploadError.value = apiErrorMessage(error, '资料上传失败，请检查文件后重试')
     uploadProgress.value = 0
@@ -623,7 +646,7 @@ function locatorLabel(locator = {}) {
   if (locator.slide) return `第 ${locator.slide} 页`
   if (locator.paragraph) return `第 ${locator.paragraph} 段`
   if (locator.table) return `第 ${locator.table} 个表格`
-  if (locator.timestamp) return `视频 ${locator.timestamp}`
+  if (locator.timestamp !== undefined) return `视频 ${locator.timestamp}`
   if (locator.offset !== undefined) return `文本位置 ${locator.offset}`
   return '来源定位'
 }
@@ -673,6 +696,10 @@ function isImageFile(file) {
   return file?.type?.startsWith('image/') || /\.(png|jpe?g|gif|bmp|webp)$/i.test(file?.name || '')
 }
 
+function isVideoFile(file) {
+  return file?.type?.startsWith('video/') || /\.(mp4|mov|avi|mkv)$/i.test(file?.name || '')
+}
+
 function formatBytes(value) {
   if (!value) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -688,7 +715,7 @@ function formatDate(value) {
 }
 
 function progressFormat(value) {
-  return value === 100 ? '解析完成' : `${value}%`
+  return value === 100 ? '上传完成' : `${value}%`
 }
 
 function apiErrorMessage(error, fallback) {
@@ -802,6 +829,7 @@ function go(path) {
 }
 
 .upload-progress,
+.video-note,
 .upload-error {
   margin-top: 14px;
 }

@@ -350,6 +350,11 @@ def run_material_analysis(analysis_id: str, *, raise_errors: bool = False) -> st
         )
         if analysis is None or analysis.status == "completed":
             return analysis_id if analysis else None
+        if analysis.status == "processing":
+            # A duplicate Celery delivery must not run the same paid parser in
+            # parallel. Stale jobs are explicitly moved back to pending by the
+            # recovery lease before they can run again.
+            return analysis_id
         material = (
             db.query(Material)
             .filter(Material.material_id == analysis.material_id)
@@ -358,6 +363,30 @@ def run_material_analysis(analysis_id: str, *, raise_errors: bool = False) -> st
         )
         if material is None or material.deleted_at is not None:
             return None
+        if material.file_type == "video":
+            canonical = (
+                db.query(Material)
+                .filter(
+                    Material.owner_id == material.owner_id,
+                    Material.project_id == material.project_id,
+                    Material.file_type == "video",
+                    Material.checksum_sha256 == material.checksum_sha256,
+                    Material.deleted_at.is_(None),
+                )
+                .order_by(Material.created_at.asc(), Material.material_id.asc())
+                .first()
+            )
+            if canonical is not None and canonical.material_id != material.material_id:
+                fail_material_analysis(
+                    db,
+                    material,
+                    analysis,
+                    "同一视频已有解析任务，本次重复任务未执行",
+                    code="VIDEO_MATERIAL_EXISTS",
+                )
+                db.commit()
+                return analysis_id
+            _require_managed_video_path(Path(material.stored_path))
         now = datetime.now(timezone.utc)
         material.status = "processing"
         material.error_code = None
@@ -405,7 +434,8 @@ def run_material_analysis(analysis_id: str, *, raise_errors: bool = False) -> st
             else None
         )
         if analysis is not None and material is not None:
-            fail_material_analysis(db, material, analysis, exc)
+            error_code = exc.code if isinstance(exc, MaterialValidationError) else "MATERIAL_PARSE_FAILED"
+            fail_material_analysis(db, material, analysis, exc, code=error_code)
             db.commit()
         if raise_errors:
             raise
@@ -633,6 +663,32 @@ def _parse_video(path: Path) -> ParsedMaterial:
         max_sample_keyframes=settings.video_parser_max_keyframes,
         max_shots=settings.video_parser_max_shots,
         output_width=settings.video_parser_output_width,
+        vision_max_keyframes=settings.video_parser_vision_max_keyframes,
+        bailian_api_key_file=settings.bailian_api_key_file,
+        dashscope_base_url=settings.dashscope_base_url,
+        video_model=settings.video_model,
+        video_input_mode=settings.video_input_mode,
+        video_fps=settings.video_fps,
+        video_max_frames=settings.video_max_frames,
+        video_chunk_seconds=settings.video_chunk_seconds,
+        video_chunk_overlap_seconds=settings.video_chunk_overlap_seconds,
+        video_max_chunks=settings.video_max_chunks,
+        video_max_duration_seconds=settings.video_parser_max_duration_seconds,
+        video_timeout_seconds=settings.video_timeout_seconds,
+        video_max_retries=settings.video_max_retries,
+        video_max_output_tokens=settings.video_max_output_tokens,
+        video_max_base64_bytes=settings.video_max_base64_bytes,
+        video_strict_schema=settings.video_strict_schema,
+        video_cache_enabled=settings.video_cache_enabled,
+        video_prompt_version=settings.video_prompt_version,
+        video_schema_version=settings.video_schema_version,
+        video_max_refinement_intervals=settings.video_max_refinement_intervals,
+        video_max_refinement_frames=settings.video_max_refinement_frames,
+        video_max_visual_frames_per_interval=settings.video_max_visual_frames_per_interval,
+        vision_model=settings.bailian_vision_model,
+        vision_timeout_seconds=settings.bailian_vision_timeout_seconds,
+        vision_max_retries=settings.bailian_vision_max_retries,
+        vision_max_output_tokens=settings.bailian_vision_max_output_tokens,
     )
     result = video_parse_video(path, output_root=settings.video_parser_output_dir, options=options)
     return _video_result_to_material(result)
@@ -646,6 +702,7 @@ def _video_type() -> str:
 
 def _video_result_to_material(result: VideoParseResult) -> ParsedMaterial:
     chunks = [_video_evidence_to_chunk(item) for item in result.evidence if item.content.strip()]
+    chunks.extend(_video_understanding_candidate_chunks(result))
     segment_lines = [
         f"{segment.time_range.start}-{segment.time_range.end} {segment.summary}"
         for segment in result.segments
@@ -667,7 +724,11 @@ def _video_result_to_material(result: VideoParseResult) -> ParsedMaterial:
             "duration_seconds": result.metadata.duration_seconds,
             "segment_count": len(result.segments),
             "keyframe_count": len(result.keyframes),
-            "evidence_count": len(result.evidence),
+            "evidence_count": len(chunks),
+            "parser_evidence_count": len(result.evidence),
+            "ai_candidate_evidence_count": sum(
+                1 for item in chunks if item.metadata.get("evidence_nature") == "ai_inference"
+            ),
             "warnings": result.warnings,
             "artifacts": result.artifacts,
             "result": payload,
@@ -692,6 +753,102 @@ def _video_evidence_to_chunk(item) -> ParsedChunk:
         **(item.metadata or {}),
     }
     return ParsedChunk(text=item.content, locator=locator, metadata=metadata)
+
+
+def _video_understanding_candidate_chunks(result: VideoParseResult) -> list[ParsedChunk]:
+    """Project validated, time-aligned model candidates into reviewable search chunks.
+
+    These chunks intentionally remain marked as AI inference. They make a
+    visual-only video discoverable by downstream retrieval without presenting
+    the model's interpretation as an observed source fact.
+    """
+
+    understanding = result.video_understanding
+    if understanding is None or understanding.status not in {"completed", "partial"}:
+        return []
+    decisions = {item.candidate_id: item for item in understanding.alignment_decisions}
+    conflicts_by_candidate: dict[str, list[str]] = {}
+    for conflict in result.conflicts:
+        if conflict.candidate_id:
+            conflicts_by_candidate.setdefault(conflict.candidate_id, []).append(conflict.id)
+
+    provenance = understanding.provenance.model_dump(mode="json") if understanding.provenance else {}
+    chunks: list[ParsedChunk] = []
+    for chapter in understanding.chapters:
+        decision = decisions.get(chapter.chapter_id)
+        if decision is None or decision.status == "rejected":
+            continue
+        knowledge_lines = [
+            f"{item.title}：{item.description}" if item.description.strip() else item.title
+            for item in chapter.knowledge_points
+            if item.title.strip()
+        ]
+        content_parts = [
+            "AI 视频理解候选（待教师复核）",
+            f"章节：{chapter.title.strip()}",
+            f"摘要：{chapter.summary.strip()}" if chapter.summary.strip() else "",
+            "知识点候选：" + "；".join(knowledge_lines) if knowledge_lines else "",
+        ]
+        content = "\n".join(item for item in content_parts if item)
+        if not content.strip():
+            continue
+        start_seconds = decision.aligned_start_seconds
+        end_seconds = decision.aligned_end_seconds
+        locator = {
+            "source_id": chapter.chapter_id,
+            "evidence_type": "derived",
+            "timestamp": _video_timecode(start_seconds),
+            "time_range": {
+                "start_seconds": start_seconds,
+                "end_seconds": end_seconds,
+                "start": _video_timecode(start_seconds),
+                "end": _video_timecode(end_seconds),
+            },
+        }
+        metadata = {
+            "format": "video",
+            "evidence_type": "derived",
+            "source_layer": "video_understanding_candidate",
+            "evidence_nature": "ai_inference",
+            "ai_generated": True,
+            "structure_validated": True,
+            "time_aligned": True,
+            "confidence": chapter.confidence,
+            "human_review_status": "pending",
+            "human_review_required": True,
+            "must_not_be_presented_as_observed_fact": True,
+            "alignment": decision.model_dump(mode="json"),
+            "conflict_ids": conflicts_by_candidate.get(chapter.chapter_id, []),
+            "provenance": provenance,
+        }
+        chunks.extend(_chunks(content, locator, metadata))
+    return chunks
+
+
+def _video_timecode(seconds: float) -> str:
+    milliseconds = max(0, round(float(seconds) * 1000))
+    hours, remainder = divmod(milliseconds, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    whole_seconds, milliseconds = divmod(remainder, 1000)
+    return f"{hours:02d}:{minutes:02d}:{whole_seconds:02d}.{milliseconds:03d}"
+
+
+def _require_managed_video_path(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    upload_root = settings.upload_dir.expanduser().resolve()
+    try:
+        resolved.relative_to(upload_root)
+    except ValueError as exc:
+        raise MaterialValidationError(
+            "视频来源不在受管上传目录内",
+            code="VIDEO_SOURCE_PATH_INVALID",
+        ) from exc
+    if not resolved.is_file():
+        raise MaterialValidationError(
+            "视频源文件不存在",
+            code="MATERIAL_FILE_NOT_FOUND",
+        )
+    return resolved
 
 
 def _chunks(text: str, locator: dict, metadata: dict) -> list[ParsedChunk]:

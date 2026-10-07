@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -333,7 +334,7 @@ class VideoParseOptions(BaseModel):
     ocr: bool = False
     ocr_max_keyframes: int = 12
     vision: bool = False
-    vision_max_keyframes: int = 12
+    vision_max_keyframes: int = 4
     vision_context_seconds: float = 12.0
     whisper_model_size: str = "base"
     language: str | None = "zh"
@@ -348,20 +349,37 @@ class VideoParseOptions(BaseModel):
     output_width: int = 960
     strict: bool = False
     video_understanding: bool = False
+    bailian_api_key_file: Path | None = Field(default=None, exclude=True)
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     video_model: str = "qwen3.7-plus"
-    video_input_mode: Literal["auto", "file_url", "https_url", "base64"] = "auto"
+    video_input_mode: Literal["file_url", "base64"] = "file_url"
     video_fps: float = Field(default=1.0, gt=0)
     video_max_frames: int = Field(default=1800, ge=1)
     video_chunk_seconds: float = Field(default=1800.0, gt=0)
     video_chunk_overlap_seconds: float = Field(default=15.0, ge=0)
+    video_max_chunks: int = Field(default=4, ge=1)
+    video_max_duration_seconds: float = Field(default=3600.0, gt=0)
     video_timeout_seconds: int = Field(default=600, ge=1)
-    video_max_retries: int = Field(default=1, ge=0)
+    video_max_retries: int = Field(default=1, ge=0, le=1)
+    video_max_output_tokens: int = Field(default=4096, ge=256)
+    video_max_base64_bytes: int = Field(default=12 * 1024 * 1024, ge=1)
     video_strict_schema: bool = True
-    video_max_refinement_intervals: int = Field(default=24, ge=0)
-    video_max_refinement_frames: int = Field(default=120, ge=1)
+    video_max_refinement_intervals: int = Field(default=6, ge=0)
+    video_max_refinement_frames: int = Field(default=12, ge=1)
+    video_max_visual_frames_per_interval: int = Field(default=4, ge=1)
     video_cache_enabled: bool = True
     video_prompt_version: str = "v1"
     video_schema_version: str = "v1"
+    vision_model: str = "qwen3.7-plus"
+    vision_timeout_seconds: int = Field(default=90, ge=10)
+    vision_max_retries: int = Field(default=1, ge=0, le=1)
+    vision_max_output_tokens: int = Field(default=1800, ge=256)
+
+    @model_validator(mode="after")
+    def validate_video_budgets(self) -> "VideoParseOptions":
+        if self.video_chunk_overlap_seconds >= self.video_chunk_seconds:
+            raise ValueError("video_chunk_overlap_seconds must be smaller than video_chunk_seconds")
+        return self
 
 
 class VideoParseResult(BaseModel):

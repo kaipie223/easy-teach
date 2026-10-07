@@ -7,10 +7,11 @@ from backend.config import Settings, settings
 from backend.core.errors import ApiError
 from backend.models.session import gen_id
 from backend.models.task import Task
-from backend.models import EvidenceChunk, KnowledgeDocument, Project, User
+from backend.models import EvidenceChunk, KnowledgeDocument, Material, MaterialAnalysis, Project, User
 from backend.services.courseware import _build_evidence_refs
 from backend.services.limits import (
     consume_model_quota,
+    consume_video_parse_quota,
     ensure_task_capacity,
     reset_local_limits,
 )
@@ -90,6 +91,19 @@ def test_generated_resource_ids_have_at_least_96_bits_of_randomness():
 
 def test_daily_model_quota_is_enforced(monkeypatch):
     reset_local_limits()
+
+
+def test_daily_video_parse_quota_is_enforced(monkeypatch):
+    reset_local_limits()
+    monkeypatch.setattr(settings, "video_parser_daily_user_limit", 1)
+
+    consume_video_parse_quota("u_video_quota_test")
+    with pytest.raises(ApiError) as exc_info:
+        consume_video_parse_quota("u_video_quota_test")
+
+    assert exc_info.value.code == "VIDEO_DAILY_QUOTA_EXCEEDED"
+    assert exc_info.value.status_code == 429
+    reset_local_limits()
     monkeypatch.setattr(settings, "daily_model_request_limit", 1)
 
     consume_model_quota("u_quota_test")
@@ -122,6 +136,41 @@ def test_task_capacity_counts_pending_work(db_session_factory, monkeypatch):
         task.status = "completed"
         db.commit()
         ensure_task_capacity(db, "u_capacity")
+    finally:
+        db.close()
+
+
+def test_task_capacity_counts_pending_video_analysis(db_session_factory, monkeypatch):
+    monkeypatch.setattr(settings, "max_concurrent_tasks_per_user", 1)
+    db = db_session_factory()
+    try:
+        material = Material(
+            material_id="mat_capacity_video",
+            owner_id="u_capacity_video",
+            original_name="lesson.mp4",
+            file_type="video",
+            stored_path="managed/lesson.mp4",
+            size_bytes=20,
+            checksum_sha256="d" * 64,
+            status="queued",
+        )
+        analysis = MaterialAnalysis(
+            analysis_id="analysis_capacity_video",
+            material_id=material.material_id,
+            run_number=1,
+            parser_name="video-parser-model",
+            status="pending",
+        )
+        db.add_all([material, analysis])
+        db.commit()
+
+        with pytest.raises(ApiError) as exc_info:
+            ensure_task_capacity(db, "u_capacity_video")
+        assert exc_info.value.code == "TASK_CONCURRENCY_LIMIT_EXCEEDED"
+
+        analysis.status = "completed"
+        db.commit()
+        ensure_task_capacity(db, "u_capacity_video")
     finally:
         db.close()
 

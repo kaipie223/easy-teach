@@ -7,7 +7,7 @@ import mimetypes
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -35,21 +35,27 @@ class VisionResponseError(BailianVisionError):
 
 @dataclass(frozen=True)
 class BailianVisionConfig:
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     base_url: str = DEFAULT_BASE_URL
     model: str = DEFAULT_MODEL
     timeout_seconds: int = 90
+    max_retries: int = 1
     max_output_tokens: int = 1800
     key_source: str = "environment"
 
+    def __post_init__(self) -> None:
+        if self.timeout_seconds <= 0 or self.max_retries < 0 or self.max_retries > 1:
+            raise ValueError("timeout_seconds must be positive and max_retries must be 0 or 1")
+
     @classmethod
-    def from_env(cls) -> "BailianVisionConfig":
-        api_key, key_source = load_bailian_api_key()
+    def from_env(cls, *, api_key_file: str | Path | None = None) -> "BailianVisionConfig":
+        api_key, key_source = load_bailian_api_key(api_key_file=api_key_file)
         return cls(
             api_key=api_key,
             base_url=(os.getenv("DASHSCOPE_BASE_URL") or os.getenv("BAILIAN_BASE_URL") or DEFAULT_BASE_URL).strip().rstrip("/"),
             model=(os.getenv("BAILIAN_VISION_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
             timeout_seconds=max(10, int(os.getenv("BAILIAN_VISION_TIMEOUT_SECONDS", "90"))),
+            max_retries=min(1, max(0, int(os.getenv("BAILIAN_VISION_MAX_RETRIES", "1")))),
             max_output_tokens=max(256, int(os.getenv("BAILIAN_VISION_MAX_OUTPUT_TOKENS", "1800"))),
             key_source=key_source,
         )
@@ -78,7 +84,11 @@ def bailian_vision_status(config: BailianVisionConfig | None = None) -> dict[str
     config = config or BailianVisionConfig.from_env()
     return {
         "status": "available" if config.configured else "unconfigured",
-        "message": "Alibaba Cloud Bailian vision is ready." if config.configured else "DASHSCOPE_API_KEY/BAILIAN_API_KEY is missing.",
+        "message": (
+            "Alibaba Cloud Bailian vision is ready."
+            if config.configured
+            else "The Bailian worker credential file is not configured."
+        ),
         "provider": "aliyun_bailian",
         "model": config.model,
         "configured": config.configured,
@@ -93,7 +103,8 @@ class BailianVisionClient:
         self.config = config or BailianVisionConfig.from_env()
         if not self.config.configured:
             raise VisionNotConfiguredError(
-                "Alibaba Cloud Bailian is not configured. Set DASHSCOPE_API_KEY (or BAILIAN_API_KEY) in the local .env file."
+                "Alibaba Cloud Bailian is not configured for this worker. "
+                "Set BAILIAN_API_KEY_FILE to one credential file."
             )
         self._transport = transport or _post_json
 
@@ -139,28 +150,54 @@ class BailianVisionClient:
             "Authorization": f"Bearer {self.config.api_key}",
             "Content-Type": "application/json",
         }
-        response_payload, response_headers = self._transport(
-            self.config.endpoint,
-            payload,
-            headers,
-            self.config.timeout_seconds,
-        )
-        content = _response_content(response_payload)
-        analysis_payload = _parse_json_object(content)
-        try:
-            analysis = VisualFrameAnalysis.model_validate(_normalize_analysis_payload(analysis_payload))
-        except Exception as exc:  # noqa: BLE001 - keep provider response errors recoverable.
-            raise VisionResponseError(f"Bailian visual response does not match the expected schema: {exc}") from exc
-        response_model = str(response_payload.get("model") or self.config.model)
-        request_id = (
-            response_headers.get("x-request-id")
-            or response_headers.get("x-acs-request-id")
-            or str(response_payload.get("id") or "")
-            or None
-        )
-        raw_usage = response_payload.get("usage") if isinstance(response_payload.get("usage"), dict) else {}
-        usage = {str(key): value for key, value in raw_usage.items() if isinstance(value, (int, float))}
-        return BailianVisionResponse(analysis=analysis, model=response_model, request_id=request_id, usage=usage)
+        last_error: BailianVisionError | None = None
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                response_payload, response_headers = self._transport(
+                    self.config.endpoint,
+                    payload,
+                    headers,
+                    self.config.timeout_seconds,
+                )
+                content = _response_content(response_payload)
+                analysis_payload = _parse_json_object(content)
+                try:
+                    analysis = VisualFrameAnalysis.model_validate(
+                        _normalize_analysis_payload(analysis_payload)
+                    )
+                except Exception as exc:  # noqa: BLE001 - provider schema errors are recoverable.
+                    raise VisionResponseError(
+                        f"Bailian visual response does not match the expected schema: {exc}"
+                    ) from exc
+                response_model = str(response_payload.get("model") or self.config.model)
+                request_id = (
+                    response_headers.get("x-request-id")
+                    or response_headers.get("x-acs-request-id")
+                    or str(response_payload.get("id") or "")
+                    or None
+                )
+                raw_usage = (
+                    response_payload.get("usage")
+                    if isinstance(response_payload.get("usage"), dict)
+                    else {}
+                )
+                usage = {
+                    str(key): value
+                    for key, value in raw_usage.items()
+                    if isinstance(value, (int, float))
+                }
+                return BailianVisionResponse(
+                    analysis=analysis,
+                    model=response_model,
+                    request_id=request_id,
+                    usage=usage,
+                )
+            except BailianVisionError as exc:
+                last_error = exc
+                if attempt >= self.config.max_retries:
+                    break
+        assert last_error is not None
+        raise last_error
 
 
 def _post_json(
@@ -177,7 +214,10 @@ def _post_json(
     )
     try:
         with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310 - URL comes from explicit local configuration.
-            response_payload = json.loads(response.read().decode("utf-8"))
+            try:
+                response_payload = json.loads(response.read().decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise VisionResponseError("Bailian returned a non-JSON response") from exc
             response_headers = {key.lower(): value for key, value in response.headers.items()}
     except HTTPError as exc:
         try:
@@ -292,7 +332,7 @@ def _string_list(value: Any) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
-def load_bailian_api_key() -> tuple[str, str]:
+def load_bailian_api_key(*, api_key_file: str | Path | None = None) -> tuple[str, str]:
     """Load one Bailian credential for every cloud-vision integration.
 
     The key value never leaves this process.  Callers receive only the source
@@ -303,7 +343,7 @@ def load_bailian_api_key() -> tuple[str, str]:
     api_key = (os.getenv("DASHSCOPE_API_KEY") or os.getenv("BAILIAN_API_KEY") or "").strip()
     if api_key:
         return api_key, "environment"
-    key_file = (os.getenv("BAILIAN_API_KEY_FILE") or "").strip()
+    key_file = str(api_key_file or os.getenv("BAILIAN_API_KEY_FILE") or "").strip()
     if key_file:
         api_key = _api_key_from_file(Path(key_file))
         if api_key:
@@ -313,14 +353,7 @@ def load_bailian_api_key() -> tuple[str, str]:
 
 def _api_key_from_file(path: Path) -> str:
     resolved = path.expanduser().resolve()
-    if resolved.is_dir():
-        candidates = [
-            *sorted(resolved.glob("*.csv")),
-            *sorted(resolved.glob("*.json")),
-            *sorted(resolved.glob("*.txt")),
-            *sorted(resolved.glob("*.md")),
-        ]
-    elif resolved.is_file():
+    if resolved.is_file():
         candidates = [resolved]
     else:
         return ""

@@ -94,8 +94,8 @@ class BailianVideoConfig:
             raise ValueError("timeout_seconds/max_base64_bytes must be positive and max_retries non-negative")
 
     @classmethod
-    def from_env(cls) -> "BailianVideoConfig":
-        api_key, key_source = load_bailian_api_key()
+    def from_env(cls, *, api_key_file: str | Path | None = None) -> "BailianVideoConfig":
+        api_key, key_source = load_bailian_api_key(api_key_file=api_key_file)
         cache_dir = (os.getenv("VIDEO_UNDERSTANDING_CACHE_DIR") or "").strip()
         return cls(
             api_key=api_key,
@@ -258,7 +258,8 @@ class BailianVideoClient:
         self.config = config or BailianVideoConfig.from_env()
         if not self.config.configured and transport is None:
             raise VideoNotConfiguredError(
-                "Alibaba Cloud video understanding is not configured. Set DASHSCOPE_API_KEY or BAILIAN_API_KEY."
+                "Alibaba Cloud video understanding is not configured for this worker. "
+                "Set BAILIAN_API_KEY_FILE to one credential file."
             )
         self._transport = transport
         self._cache = cache or (VideoUnderstandingCache(self.config.cache_dir) if self.config.cache_dir else None)
