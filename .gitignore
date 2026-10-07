@@ -62,3 +62,15 @@ chroma_data/
 knowledge-base/.managed/
 # 排查用的临时脚本（根目录下划线开头），不再入库
 /_*.py
+
+# 原始教材资料与系统生成的成品：只留在本地/服务器，绝不入库
+#   PDF/PPTX/DOCX/XLSX 正是本系统会生成的格式（课件、教案、打印版、导出表格），
+#   教材原始 PDF 也归在这里。曾经翻过车：28 个教材 PDF（约 1 GB）被提交进来，
+#   仓库 pack 涨到 1.13 GiB，其中两个还贴着 GitHub 单文件 100 MB 的上限。
+#   确实需要把某一份文档纳入版本库时，用 git add -f 强制添加。
+*.pdf
+*.pptx
+*.docx
+*.xlsx
+backend/output/
+knowledge-base/教材PDF/

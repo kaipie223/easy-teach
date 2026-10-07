@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -330,3 +331,49 @@ def test_docker_build_context_excludes_runtime_credentials_and_backups():
     assert "backups" in dockerignore
     assert "hotfix-backups" in dockerignore
     assert "knowledge-base/.managed" in dockerignore
+    # 教材原始 PDF 不进构建上下文：知识库在运行期导入到 data/，镜像里不该带 1 GB 原始文件
+    assert "knowledge-base/教材PDF/" in dockerignore
+
+
+def test_gitignore_excludes_textbooks_and_generated_artifacts():
+    """原始教材与系统生成的成品不进版本库。
+
+    实际翻过一次车：28 个教材 PDF（约 1 GB）被提交进来，仓库 pack 涨到 1.13 GiB，
+    其中两个还贴着 GitHub 单文件 100 MB 上限。规则钉在这里，别再发生。
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    rules = (project_root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    for rule in (
+        "*.pdf",
+        "*.pptx",
+        "*.docx",
+        "*.xlsx",
+        "backend/output/",
+        "knowledge-base/教材PDF/",
+    ):
+        assert rule in rules, f".gitignore 缺少规则：{rule}"
+
+
+def test_no_textbooks_or_generated_outputs_are_tracked():
+    """再问一次 git 本身：这些目录里现在有没有文件被跟踪。
+
+    只看目录、不看扩展名 —— 仓库里还有历史遗留的测试夹具（ai/test.pdf、
+    gen/parse/test_document.docx），按扩展名断言会和它们打架。
+    """
+    project_root = Path(__file__).resolve().parents[1]
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],  # -z：不转义非 ASCII 文件名，否则中文路径带引号前缀
+            cwd=project_root,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("环境里没有可用的 git")
+    if result.returncode != 0:
+        pytest.skip("当前目录不是 git 工作树")
+
+    tracked = [item for item in result.stdout.decode("utf-8", "replace").split("\0") if item]
+    for prefix in ("knowledge-base/", "data/", "backend/output/", "frontend/.ui-shots/"):
+        offenders = [path for path in tracked if path.startswith(prefix)]
+        assert not offenders, f"这些文件不该进版本库：{offenders[:5]}"
