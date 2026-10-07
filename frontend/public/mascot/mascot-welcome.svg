@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">托托欢迎状态</title>
+  <desc id="desc">托托左手叉腰，右手伸直挥手向用户打招呼。</desc>
+  <g id="mascot">
+    <ellipse id="shadow" cx="256" cy="438" rx="112" ry="14" fill="#25434A" opacity=".12"/>
+    <g id="folder-tab">
+      <path d="M166 151C166 132 181 117 200 117H254L279 144H342C361 144 376 159 376 178V195H166V151Z" fill="#0F8D76" stroke="#25434A" stroke-width="10" stroke-linejoin="round"/>
+    </g>
+    <g id="body">
+      <rect x="116" y="154" width="280" height="270" rx="58" fill="#9ACED1" stroke="#25434A" stroke-width="10"/>
+      <path d="M150 338C190 365 322 365 362 338V376C362 395 347 410 328 410H184C165 410 150 395 150 376V338Z" fill="#72B5BC" opacity=".8"/>
+    </g>
+    <g id="arm-left" fill="none" stroke="#25434A" stroke-width="12" stroke-linecap="round">
+      <path d="M122 292C100 292 91 309 99 326C106 339 120 341 135 333"/>
+      <circle cx="136" cy="332" r="8" fill="#FFB547" stroke="none"/>
+    </g>
+    <g id="arm-right" fill="none" stroke="#25434A" stroke-width="12" stroke-linecap="round">
+      <animateTransform attributeName="transform" attributeType="XML" type="rotate" values="0 390 292;-16 390 292;12 390 292;-12 390 292;0 390 292" dur="1.2s" repeatCount="indefinite"/>
+      <path d="M390 302L414 220"/>
+      <circle cx="416" cy="218" r="8" fill="#FFB547" stroke="none"/>
+    </g>
+    <g id="face">
+      <rect x="165" y="190" width="182" height="106" rx="48" fill="#FFFFFF"/>
+    </g>
+    <circle id="eye-left" cx="216" cy="236" r="12" fill="#25434A"/>
+    <circle id="eye-right" cx="296" cy="236" r="12" fill="#25434A"/>
+    <path id="mouth" d="M232 258C246 274 266 274 280 258" fill="none" stroke="#25434A" stroke-width="8" stroke-linecap="round"/>
+    <g id="progress">
+      <rect x="190" y="330" width="132" height="30" rx="15" fill="#FFFFFF" opacity=".9"/>
+      <circle cx="211" cy="345" r="7" fill="#0F8D76"/>
+      <circle cx="256" cy="345" r="7" fill="#0F8D76"/>
+      <circle cx="301" cy="345" r="7" fill="#0F8D76" opacity=".55"/>
+    </g>
+    <g id="badge">
+      <circle cx="351" cy="174" r="22" fill="#FFB547" stroke="#25434A" stroke-width="7"/>
+      <path d="M341 174L348 181L362 166" fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+  </g>
+</svg>

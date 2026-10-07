@@ -57,14 +57,20 @@
       </div>
     </div>
 
-    <el-alert v-if="errorMessage" :title="errorMessage" type="error" show-icon :closable="false">
-      <template v-if="canUseTemplate" #default>
-        <el-button size="small" type="primary" @click="rebuildPlan('template')">使用基础模板</el-button>
-      </template>
-    </el-alert>
+    <TotoNotice v-if="errorMessage" state="error" :title="errorMessage">
+      <el-button
+        v-if="canUseTemplate"
+        size="small"
+        type="primary"
+        @click="rebuildPlan('template')"
+      >
+        使用基础模板
+      </el-button>
+    </TotoNotice>
 
     <StageProgress
       v-if="loading"
+      :mascot="true"
       :percent="stagePercent"
       :label="stageLabel"
       :steps="stageList"
@@ -347,6 +353,7 @@ import { createVersionExports, fetchArtifactVersions, fetchCoursewarePlan, saveC
 import StageProgress from '@/components/progress/StageProgress.vue'
 import AppPageHeader from '@/components/common/AppPageHeader.vue'
 import AppEmptyState from '@/components/common/AppEmptyState.vue'
+import TotoNotice from '@/components/common/TotoNotice.vue'
 import { SSEClient } from '@/utils/sse'
 import { useProjectStore } from '@/stores/project'
 
@@ -463,7 +470,9 @@ async function buildPlanWithProgress(options) {
     onProgress: (payload) => {
       stageLabel.value = payload?.stage_label || payload?.label || stageLabel.value
       stagePercent.value = payload?.percent ?? stagePercent.value
-      stageKey.value = payload?.stage || stageKey.value
+      // 步骤条高亮要的是里程碑（step）：stage 可能是 skeleton / fill_slides 这类
+      // 子阶段，步骤条里没有它们，拿 stage 匹配会导致所有步骤都是灰的。
+      stageKey.value = payload?.step || payload?.stage || stageKey.value
       if (payload?.stages?.length) stageList.value = payload.stages
     },
     onResult: (payload) => { result = payload },

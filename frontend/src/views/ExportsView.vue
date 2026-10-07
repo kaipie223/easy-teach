@@ -74,6 +74,14 @@
         </p>
       </section>
 
+      <!-- 进行中：整页只放一个托托。四条导出记录各有各的进度条，逐行挂角色会变成一屏好几个 -->
+      <TotoNotice
+        v-if="runningExports.length"
+        state="working"
+        :title="`正在渲染 ${runningExports.length} 个文件…`"
+        description="不用守着这一页，完成状态会自动刷新。"
+      />
+
       <section class="section-card">
         <div class="section-header">
           <div>
@@ -356,6 +364,7 @@ import {
   getApiErrorMessage,
 } from '@/api'
 import StageProgress from '@/components/progress/StageProgress.vue'
+import TotoNotice from '@/components/common/TotoNotice.vue'
 import SlidePreview from '@/components/preview/SlidePreview.vue'
 import AppPageHeader from '@/components/common/AppPageHeader.vue'
 import AppEmptyState from '@/components/common/AppEmptyState.vue'
@@ -379,6 +388,9 @@ let streamClosed = false
 const selectedVersion = computed(() => versions.value.find((version) => version.artifact_version_id === selectedVersionId.value))
 /** 展开了历史版本的格式（默认全部收起，列表才清爽） */
 const expandedFormats = ref(new Set())
+
+/** 正在渲染的导出：页面级只挂一个托托，避免一屏好几个角色 */
+const runningExports = computed(() => exports.value.filter(item => isRunning(item)))
 
 const FORMAT_ICONS = { pptx: Monitor, docx: Document, pdf: Printer, html: MagicStick }
 const FORMAT_ORDER = ['pptx', 'docx', 'pdf', 'html']

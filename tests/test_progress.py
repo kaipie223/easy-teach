@@ -7,14 +7,48 @@ from backend.services.progress import (
     GENERATION_STAGES,
     PLAN_BRANCHES,
     PLAN_STAGES,
+    REVISION_BRANCHES,
     REVISION_STAGES,
     export_stage_label,
+    frame,
     label_of,
     material_stages,
     percent_of,
 )
 
 from tests.test_m5_versioning import create_project_with_plan, empty_rag, register
+
+
+def test_sub_stages_fold_onto_a_step_that_exists_in_the_stepper():
+    """子阶段必须给出它所属的里程碑，否则步骤条一个都对不上、全部变灰。
+
+    实测症状：生成/重生成期间前端"只有进度条，看不出现在在哪一步"—— stage 上报的是
+    skeleton / fill_teaching / fill_slides，而步骤条里只有 brief / evidence / generate /
+    review / persist，前端 indexOf 拿 -1，5 个步骤全被判定为"未开始"。
+    """
+    manifest_keys = [stage.key for stage in PLAN_STAGES]
+    for key in (
+        "skeleton",
+        "fill_teaching",
+        "fill_slides",
+        "repair",
+        "review_repair",
+        "reused",
+        "review",
+        "persist",
+    ):
+        payload = frame(PLAN_STAGES, key, branches=PLAN_BRANCHES)
+        assert payload["step"] in manifest_keys, (key, payload["step"])
+
+    # 三个子阶段都归到"生成教学蓝图"这一步
+    for key in ("skeleton", "fill_teaching", "fill_slides"):
+        assert frame(PLAN_STAGES, key, branches=PLAN_BRANCHES)["step"] == "generate"
+    # 回头修复归到审校
+    assert frame(PLAN_STAGES, "review_repair", branches=PLAN_BRANCHES)["step"] == "review"
+    # 里程碑本身原样返回
+    assert frame(PLAN_STAGES, "persist", branches=PLAN_BRANCHES)["step"] == "persist"
+    # 局部重生成那条链路有同样的问题：repair 不在 REVISION_STAGES 里
+    assert frame(REVISION_STAGES, "repair", branches=REVISION_BRANCHES)["step"] == "generate"
 
 
 def test_every_reported_blueprint_stage_has_wording_and_a_nonzero_percent():

@@ -14,6 +14,9 @@
       </el-tag>
     </div>
 
+    <!-- 已确认是个持久的"完成"状态：托托在这里把话说完整，比一个绿标签更明确 -->
+    <TotoMascot v-if="isConfirmed" class="brief-toto" state="success" :size="104" />
+
     <div v-if="!brief" class="brief-empty">
       <el-icon><Document /></el-icon>
       <p>发一条教学想法，这里会自动整理成需求单。</p>
@@ -132,6 +135,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { Document } from '@element-plus/icons-vue'
+import TotoMascot from '@/components/common/TotoMascot.vue'
 
 const props = defineProps({
   brief: { type: Object, default: null },
@@ -284,6 +288,10 @@ watch(() => props.brief, syncForm, { immediate: true, deep: true })
   font-size: var(--text-md);
   font-weight: var(--weight-semibold);
   color: var(--text-primary);
+}
+
+.brief-toto {
+  margin: var(--space-4) 0;
 }
 
 .brief-empty {
