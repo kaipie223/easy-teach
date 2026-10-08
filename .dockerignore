@@ -18,6 +18,7 @@ knowledge-base/.managed
 # 教材原始 PDF（约 1 GB）：知识库是在运行期导入到 data/ 的，不进镜像；
 # 留在构建上下文里会让每次 docker build 都先搬运 1 GB。
 knowledge-base/教材PDF/
+knowledge-base/教材OCR文本/
 backend/output
 frontend/node_modules
 frontend/dist

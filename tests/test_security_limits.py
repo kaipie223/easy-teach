@@ -350,6 +350,7 @@ def test_gitignore_excludes_textbooks_and_generated_artifacts():
         "*.xlsx",
         "backend/output/",
         "knowledge-base/教材PDF/",
+        "knowledge-base/教材OCR文本/",
     ):
         assert rule in rules, f".gitignore 缺少规则：{rule}"
 

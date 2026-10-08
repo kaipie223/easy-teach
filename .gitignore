@@ -74,3 +74,5 @@ knowledge-base/.managed/
 *.xlsx
 backend/output/
 knowledge-base/教材PDF/
+# 扫描件 OCR 出来的文本（scripts/ocr_textbooks.py 的产物）：派生数据，可重跑生成
+knowledge-base/教材OCR文本/
