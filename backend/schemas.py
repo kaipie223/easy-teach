@@ -419,6 +419,11 @@ class KnowledgeDocumentInfo(BaseModel):
     updated_at: datetime | None = None
     deleted_at: datetime | None = None
     chunk_count: int = 0
+    # 入库体检：整本扫描件会"导入成功、0 个块"，只看 chunk_count 看不出来 —— 页数、
+    # 有字的页数与抽字率才能让界面一眼标出"这本是图片、需要先 OCR"。
+    page_count: int = 0
+    text_pages: int = 0
+    text_coverage: float = 0.0
 
 
 class KnowledgeDocumentUpdate(BaseModel):
@@ -426,10 +431,55 @@ class KnowledgeDocumentUpdate(BaseModel):
     enabled: bool | None = None
 
 
-class KnowledgeIndexResponse(BaseModel):
-    status: KnowledgeIndexStatus
-    indexed_document_ids: list[str] = Field(default_factory=list)
-    chunk_count: int = 0
+class KnowledgeIndexJobInfo(BaseModel):
+    """索引任务已受理。
+
+    索引是分钟级的任务，接口只负责启动、不等它跑完：以前这次请求会一直挂到客户端超时
+    （axios 10 分钟），教师看到"建到一半报超时"，服务端却还在跑。现在结束与进度都看
+    ``GET /knowledge/index/progress``。
+
+    默认只增量处理"未就绪 / 不在当前集合里"的文档，全部已就绪时是空操作。
+    """
+
+    status: KnowledgeIndexStatus = KnowledgeIndexStatus.INDEXING
+    # False：这个账号已有一次索引在跑，本次没有重复启动（进度接口看得到它）
+    started: bool = True
+    # False：没有任何文档需要处理（索引已是最新），没有启动后台任务
+    work_pending: bool = True
+
+
+class KnowledgeIndexProgress(BaseModel):
+    """索引进度。
+
+    索引跑在后台线程里，启动接口返回时什么都还没做完，所以进度要能单独查询。这里的
+    状态全部由文档字段推导，因此刷新页面后仍能看到同一条进度，而不是回到"未知"。
+
+    ``written_chunks/total_chunks`` 是整库口径（就绪文档按满额计入）；``run_*`` 三个
+    字段描述**本次运行**这一批文档，增量模式下这两个口径会明显不同，界面上的"第 N / M
+    本"与阶段判定都用本次运行口径。
+    """
+
+    running: bool = False
+    # 在跑，但已经超过阈值没有推进：界面要能说"可能已中断"，而不是永远显示"正在处理"
+    stalled: bool = False
+    # idle / preparing（加载模型，首次运行含下载）/ embedding / stalled
+    stage: str = "idle"
+    total_documents: int = 0
+    ready_documents: int = 0
+    failed_documents: int = 0
+    current_document_id: str | None = None
+    current_document_title: str = ""
+    # 当前文档在本次运行里的位置（第几本，从 1 开始；0 = 未知）
+    current_document_position: int = 0
+    current_chunks_written: int = 0
+    current_chunks_total: int = 0
+    # 本次运行要处理的文档数
+    run_documents: int = 0
+    # 本次运行已写入的块数（区别于整库口径的 written_chunks）
+    run_written_chunks: int = 0
+    written_chunks: int = 0
+    total_chunks: int = 0
+    percent: int = 0
 
 
 class KnowledgeSearchRequest(BaseModel):

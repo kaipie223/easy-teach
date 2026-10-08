@@ -82,11 +82,84 @@
       />
     </section>
 
+    <!-- 库概览：答辩时一眼说清"这个专业数据库有多大"。数字全部由已入库文档聚合，
+         不做任何估算；抽字率是唯一能暴露"整本是扫描件"的指标。 -->
+    <section v-if="documents.length && !loading" class="section-card library-overview">
+      <div class="section-header">
+        <div>
+          <h2>库概览</h2>
+          <p>当前账号可检索的教材规模；生成课件时只会命中已启用且完成索引的文档。</p>
+        </div>
+      </div>
+      <div class="overview-grid">
+        <div class="overview-item">
+          <span class="overview-value text-tabular">{{ libraryStats.total }}</span>
+          <span class="overview-label">本教材</span>
+        </div>
+        <div class="overview-item">
+          <span class="overview-value text-tabular">{{ libraryStats.pages.toLocaleString() }}</span>
+          <span class="overview-label">页原文</span>
+        </div>
+        <div class="overview-item">
+          <span class="overview-value text-tabular">{{ libraryStats.chunks.toLocaleString() }}</span>
+          <span class="overview-label">个知识块</span>
+        </div>
+        <div class="overview-item">
+          <span class="overview-value text-tabular">{{ libraryStats.ready }}/{{ libraryStats.total }}</span>
+          <span class="overview-label">已建索引</span>
+        </div>
+        <div class="overview-item">
+          <span class="overview-value text-tabular">{{ libraryStats.coverage }}%</span>
+          <span class="overview-label">平均抽字率</span>
+        </div>
+      </div>
+      <el-alert
+        v-if="libraryStats.suspects"
+        class="overview-alert"
+        type="warning"
+        :closable="false"
+        show-icon
+        :title="`有 ${libraryStats.suspects} 本抽字率偏低：多半是扫描件，导入成功却检索不到内容，需要先 OCR 再入库`"
+      />
+    </section>
+
+    <!-- 索引进度：重建跑在后台，页面上拿不到中间状态，所以进度来自轮询。
+         没有它，教师只能看到一句"正在建立索引"，既不知道在处理哪一本，也无从判断
+         是卡住了还是在正常推进。 -->
+    <section v-if="showIndexProgress" class="section-card">
+      <div class="section-header">
+        <div>
+          <h2>{{ indexProgressTitle }}</h2>
+          <p>{{ indexProgressHint }}</p>
+        </div>
+      </div>
+      <el-progress
+        :percentage="indexProgress.percent"
+        :status="indexProgress.stalled ? 'exception' : undefined"
+        :stroke-width="14"
+      />
+      <div class="progress-facts">
+        <span>
+          正在处理：
+          <strong>{{ currentDocumentLabel }}</strong>
+        </span>
+        <span v-if="indexProgress.current_chunks_total" class="text-tabular">
+          本文件已写入 {{ indexProgress.current_chunks_written }} / {{ indexProgress.current_chunks_total }} 块
+        </span>
+        <span class="text-tabular">
+          已建索引 {{ indexProgress.ready_documents }} / {{ indexProgress.total_documents }} 本
+        </span>
+        <span v-if="indexProgress.total_chunks" class="text-tabular">
+          知识块 {{ indexProgress.written_chunks }} / {{ indexProgress.total_chunks }}
+        </span>
+      </div>
+    </section>
+
     <section class="section-card">
       <div class="section-header">
         <div>
           <h2>文档状态</h2>
-          <p>停用或删除后不会作为新的检索来源；修改启用状态后需要重新索引。</p>
+          <p>停用或删除后不会作为新的检索来源，重新索引时会清掉它们已建的索引；修改启用状态后需要重新索引。</p>
         </div>
         <el-button type="primary" :loading="indexing" :disabled="!documents.length" @click="rebuildIndex">
           <el-icon><Refresh /></el-icon>
@@ -108,9 +181,9 @@
       </AppEmptyState>
       <template v-else>
         <el-alert
-          v-if="indexing || documents.some(document => document.indexing)"
-          title="正在生成中文向量索引"
-          description="首次运行需要下载轻量向量模型，完成前请不要重复提交。"
+          v-if="documents.some(document => document.indexing)"
+          title="正在为这一份文档重新索引"
+          description="只会重新处理这一份文档，其它已建好的索引不受影响，进度见上方进度条。"
           type="info"
           show-icon
           :closable="false"
@@ -128,6 +201,16 @@
                 <span :class="['status-pill', indexStatusClass(document.index_status)]">
                   {{ indexStatusLabel(document.index_status) }}
                 </span>
+                <!-- 首建/全量时所有文档都是"索引中"，只标出真正在处理的那一本，
+                     否则教师看到一整列"索引中"仍然不知道进度在哪 -->
+                <el-tag
+                  v-if="document.document_id === currentIndexingDocumentId"
+                  type="primary"
+                  size="small"
+                  effect="dark"
+                >
+                  处理中
+                </el-tag>
               </div>
               <!-- 内部 document_id 不再展示：它对教师没有意义 -->
               <p class="document-meta">
@@ -136,6 +219,17 @@
                 <span>{{ fileTypeLabel(document.file_type) }}</span>
                 <span class="dot" aria-hidden="true">·</span>
                 <span class="text-tabular">{{ document.chunk_count }} 个分段</span>
+                <template v-if="document.page_count">
+                  <span class="dot" aria-hidden="true">·</span>
+                  <span class="text-tabular">{{ document.page_count }} 页</span>
+                  <span
+                    class="coverage-tag"
+                    :class="{ 'is-low': document.text_coverage < 0.9 }"
+                    :title="`${document.text_pages}/${document.page_count} 页能抽出文字`"
+                  >
+                    抽字率 {{ Math.round((document.text_coverage || 0) * 100) }}%
+                  </span>
+                </template>
               </p>
               <p v-if="document.error_message" class="document-error">{{ document.error_message }}</p>
             </div>
@@ -156,7 +250,7 @@
                 @click="indexDocument(document)"
               >
                 <el-icon><Refresh /></el-icon>
-                {{ document.index_status === 'failed' ? '重试' : '重建' }}
+                {{ document.index_status === 'failed' ? '重试' : '重新索引' }}
               </el-button>
               <!-- 删除收进"更多"：破坏性操作不与常规操作并排 -->
               <el-dropdown trigger="click" @command="command => handleRowCommand(command, document)">
@@ -217,7 +311,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Collection,
@@ -236,6 +330,7 @@ import AppEmptyState from '@/components/common/AppEmptyState.vue'
 import {
   deleteKnowledgeDocument,
   fetchKnowledgeDocuments,
+  fetchKnowledgeIndexProgress,
   indexKnowledgeDocument,
   rebuildKnowledgeIndex,
   searchKnowledge,
@@ -258,8 +353,174 @@ const enabled = ref(true)
 const query = ref('')
 const results = ref([])
 const searched = ref(false)
+// 索引进度：由后端从文档状态推导，所以刷新页面后还能接着显示，而不是回到"未知"
+const indexProgress = ref(null)
+// 本页发起、正在等待结束的那次重建：'知识库' 或书名（用于完成后的文案）。
+// 请求只代表"已启动"，所以"跑完没有"必须由进度轮询判定，完成文案也只能等到那时再说。
+const pendingIndexJob = ref(null)
+let progressTimer = null
+let idleStreak = 0
 
-onMounted(loadDocuments)
+// 库概览：全部来自已入库文档的字段（页数、抽字率由后端在导入时记进 metadata），
+// 前端只做聚合，不估算。suspects 只统计"页数够多却抽不出字"的书 —— 短文档本来就
+// 可能没几页可抽，不该被标成扫描件。
+const libraryStats = computed(() => {
+  const total = documents.value.length
+  const pages = documents.value.reduce((sum, item) => sum + (item.page_count || 0), 0)
+  const textPages = documents.value.reduce((sum, item) => sum + (item.text_pages || 0), 0)
+  const chunks = documents.value.reduce((sum, item) => sum + (item.chunk_count || 0), 0)
+  const ready = documents.value.filter(item => item.index_status === 'ready').length
+  const suspects = documents.value.filter(
+    item => (item.page_count || 0) >= 20 && (item.text_coverage || 0) < 0.9,
+  ).length
+  return {
+    total,
+    pages,
+    chunks,
+    ready,
+    coverage: pages ? Math.round((textPages / pages) * 100) : 0,
+    suspects,
+  }
+})
+
+// ── 索引进度 ───────────────────────────────────────────
+//
+// 重建在服务端后台线程里跑：启动接口毫秒级返回，结束（成功或失败）没有任何回调，
+// 所以"跑完没有"只能靠轮询进度来判定。用轮询而不是 SSE：进度本身每 100 个知识块
+// 才更新一次，2 秒一次足够，而且刷新页面后能立刻接上同一条进度。
+
+// 整库重建在 pendingIndexJob 里的标记值；其它值都是"某一本"的书名（见 finishIndexJob）
+const INDEX_JOB_LABEL = '知识库'
+
+const INDEX_PROGRESS_POLL_MS = 2000
+// 连续这么多次看不到"正在跑"才认定结束。两次可能读到"其实还在跑"的 idle：点击后
+// 首个进度帧可能赶在启动请求之前落下，结束时落后一拍的那帧也还会说 running。
+// 只看到一次 idle 就收工，会把这两种情况都误判成"已经结束"。
+const INDEX_PROGRESS_IDLE_STREAK = 3
+
+const currentIndexingDocumentId = computed(() => {
+  const progress = indexProgress.value
+  return progress && progress.running ? progress.current_document_id : null
+})
+
+const showIndexProgress = computed(() => {
+  const progress = indexProgress.value
+  return Boolean(progress && (progress.running || progress.stalled))
+})
+
+const indexProgressTitle = computed(() => {
+  const progress = indexProgress.value
+  if (!progress) return ''
+  if (progress.stalled) return '索引可能已中断'
+  if (progress.stage === 'preparing') return '正在准备向量模型'
+  return '正在建立索引'
+})
+
+const indexProgressHint = computed(() => {
+  const progress = indexProgress.value
+  if (!progress) return ''
+  if (progress.stalled) {
+    return '已经超过 10 分钟没有进度更新，可能是服务重启或任务被中断。重新点击"建立索引"即可重试。'
+  }
+  if (progress.stage === 'preparing') {
+    return '首次运行需要先下载中文向量模型（几十 MB），这一段时间没有进度变化是正常的，请不要重复提交。'
+  }
+  return '每写入 100 个知识块更新一次进度；完成后会自动刷新文档状态。'
+})
+
+const currentDocumentLabel = computed(() => {
+  const progress = indexProgress.value
+  if (!progress) return ''
+  if (!progress.current_document_title) {
+    return progress.running ? '正在准备…' : '—'
+  }
+  // 优先用后端给出的"本次运行"口径：增量索引只处理少数几本，整库口径的
+  // ready+1 会显示成"第 11 / 11 本"这种和实际不符的位置。
+  const total = progress.run_documents || progress.total_documents
+  const position = progress.current_document_position
+    || Math.min(progress.ready_documents + 1, progress.total_documents)
+  return `${progress.current_document_title}（第 ${position} / ${total} 本）`
+})
+
+async function refreshIndexProgress() {
+  try {
+    const response = await fetchKnowledgeIndexProgress()
+    indexProgress.value = response.data || null
+  } catch (error) {
+    // 进度查询失败不该打断索引本身，也不该把整个页面变成错误态：
+    // 保留上一帧，界面继续显示它最后知道的进度。
+    void error
+  }
+  return indexProgress.value
+}
+
+function stopIndexProgressPolling() {
+  if (progressTimer === null) return
+  window.clearInterval(progressTimer)
+  progressTimer = null
+  idleStreak = 0
+}
+
+function startIndexProgressPolling() {
+  if (progressTimer !== null) return
+  idleStreak = 0
+  void refreshIndexProgress()
+  progressTimer = window.setInterval(async () => {
+    const progress = await refreshIndexProgress()
+    if (progress && progress.running) {
+      idleStreak = 0
+      return
+    }
+    idleStreak += 1
+    if (idleStreak < INDEX_PROGRESS_IDLE_STREAK) return
+    // 结束（或被判定中断）：停止轮询并刷新一次列表，让状态和块数落到位。
+    // 刷新页面时正好有重建在跑的情况下，正是靠这里把最终结果拉回来。
+    stopIndexProgressPolling()
+    await finishIndexJob(progress)
+  }, INDEX_PROGRESS_POLL_MS)
+}
+
+/**
+ * 一次重建结束（或被判定中断）后的收尾：刷新列表，并把结果告诉教师。
+ *
+ * 结果只能在这里说：启动接口早已返回，成功与失败都是后来才发生的——失败的证据是
+ * 文档被标成 failed（后端在重建失败时统一落库），不是某个 HTTP 状态码。
+ */
+async function finishIndexJob(progress) {
+  await loadDocuments()
+  const label = pendingIndexJob.value
+  pendingIndexJob.value = null
+  indexing.value = false
+  documents.value.forEach(document => {
+    document.indexing = false
+  })
+  if (!label) return
+
+  if (progress?.stalled) {
+    ElMessage.warning('索引看起来已经中断，重新点击“建立索引”即可重试')
+    return
+  }
+  const failed = documents.value.filter(document => document.index_status === 'failed')
+  if (failed.length) {
+    pageError.value = `索引失败：${failed[0].title} 未能完成向量化，请重试`
+    return
+  }
+  if (!progress?.total_documents) {
+    // 一本都没启用：后台确实重建了一个空索引，但说"已建立"只会让人以为做了很多事
+    ElMessage.info('没有已启用的文档，无需建立索引')
+    return
+  }
+  ElMessage.success(label === INDEX_JOB_LABEL ? '知识库索引已建立' : `“${label}”已完成索引`)
+}
+
+onMounted(async () => {
+  await loadDocuments()
+  // 页面刷新时可能正好有一次重建在跑（例如在另一个标签页触发的），要能接着显示
+  const progress = await refreshIndexProgress()
+  if (progress && (progress.running || progress.stalled)) startIndexProgressPolling()
+})
+
+onUnmounted(stopIndexProgressPolling)
 
 async function loadDocuments() {
   loading.value = true
@@ -327,32 +588,69 @@ async function rebuildIndex() {
   if (indexing.value) return
   indexing.value = true
   pageError.value = ''
+  // 先开始轮询再发请求：重建在服务端后台跑，进度只能从旁边看。
+  startIndexProgressPolling()
   try {
-    await rebuildKnowledgeIndex()
-    await loadDocuments()
-    ElMessage.success('知识库索引已建立')
+    const response = await rebuildKnowledgeIndex()
+    if (response.data?.work_pending === false) {
+      // 后端确认没有任何文档需要处理：没有后台任务在跑。不停轮询的话，接下来几次
+      // "空闲"探测会走 finishIndexJob，把这次空操作报成"知识库索引已建立"，
+      // 教师会以为真的重建了一遍还白等一段时间。
+      pendingIndexJob.value = null
+      stopIndexProgressPolling()
+      indexing.value = false
+      await loadDocuments()
+      ElMessage.info('索引已是最新，无需重新建立')
+      return
+    }
+    // 接口返回只说明"已启动"：结束与成功/失败都由 finishIndexJob 在轮询判定结束时给出，
+    // 所以这里不能停轮询、也不能说"已建立"。
+    pendingIndexJob.value = INDEX_JOB_LABEL
+    // 启动请求慢到超过"连续空闲"判定时，轮询已经收工了；这时要把它重新支起来，
+    // 否则按钮会一直停在"建立中"，直到刷新页面。
+    if (progressTimer === null) startIndexProgressPolling()
+    if (response.data?.started === false) {
+      ElMessage.info('这个知识库正在建立索引，进度见上方进度条')
+    } else {
+      ElMessage.success('已开始建立索引，进度见上方进度条')
+    }
   } catch (error) {
-    pageError.value = apiErrorMessage(error, '索引建立失败，请检查模型和网络后重试')
-    await loadDocuments()
-  } finally {
+    pendingIndexJob.value = null
     indexing.value = false
+    pageError.value = apiErrorMessage(error, '索引启动失败，请检查模型和网络后重试')
+    // 启动失败不代表后台没在跑（例如上一次的请求还在继续），所以只有确认没有在跑的
+    // 重建时才收工，否则保留轮询把真实进展显示出来。
+    if (!indexProgress.value?.running) {
+      stopIndexProgressPolling()
+      await loadDocuments()
+    }
   }
 }
 
 async function indexDocument(document) {
   if (document.indexing || !document.enabled) return
   document.indexing = true
+  // 单本文档的"重新索引"只重做这一本，后端会跳过其它已建好的文档；进度显示与整体
+  // 索引共用同一条
+  startIndexProgressPolling()
   try {
-    await indexKnowledgeDocument(document.document_id)
-    await loadDocuments()
-    ElMessage.success(`“${document.title}”已完成索引`)
+    const response = await indexKnowledgeDocument(document.document_id)
+    if (!pendingIndexJob.value) pendingIndexJob.value = document.title
+    // 同 rebuildIndex：启动请求期间轮询可能已经按"空闲"收工
+    if (progressTimer === null) startIndexProgressPolling()
+    if (response.data?.started === false) {
+      ElMessage.info('知识库正在建立索引，进度见上方进度条')
+    } else {
+      ElMessage.success('已开始建立索引，进度见上方进度条')
+    }
   } catch (error) {
-    const message = apiErrorMessage(error, '文档索引失败，请重试')
-    pageError.value = message
-    await loadDocuments()
-    ElMessage.error(message)
-  } finally {
     document.indexing = false
+    const message = apiErrorMessage(error, '文档索引启动失败，请重试')
+    pageError.value = message
+    if (!indexProgress.value?.running) {
+      stopIndexProgressPolling()
+      await loadDocuments()
+    }
   }
 }
 
@@ -508,6 +806,21 @@ function apiErrorMessage(error, fallback) {
   margin-bottom: var(--space-3);
 }
 
+/* 进度面板：事实项允许换行成多行，窄屏下也不会挤成一行 */
+.progress-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin-top: var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.progress-facts strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -583,6 +896,52 @@ function apiErrorMessage(error, fallback) {
   font-weight: var(--weight-medium);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── 库概览：专业数据库的规模与体检 ───────────────────────────── */
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--space-3);
+}
+
+.overview-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-sunken);
+}
+
+.overview-value {
+  color: var(--text-primary);
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  line-height: var(--leading-tight);
+}
+
+.overview-label {
+  color: var(--text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.overview-alert {
+  margin-top: var(--space-3);
+}
+
+/* 抽字率：低于阈值用警示色，一眼标出"这本是扫描件，导进来也检索不到" */
+.coverage-tag {
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-sunken);
+  color: var(--text-tertiary);
+}
+
+.coverage-tag.is-low {
+  background: var(--warning-50);
+  color: var(--warning-600);
 }
 
 .document-meta {

@@ -2,67 +2,54 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Sequence
 
-from fastembed import TextEmbedding
-from fastembed.common.model_description import ModelSource, PoolingType
-
 from backend.config import settings
+
+# HF_ENDPOINT 必须在 fastembed（进而 huggingface_hub）被导入之前写进环境变量：
+# huggingface_hub 在 import 那一刻就把 HF_ENDPOINT 读成了模块常量，之后再设无效。
+# 这个镜像决定模型能否下载成功 —— 官方两个源（huggingface.co 与
+# storage.googleapis.com）在国内网络下都不可达，实测建索引会直接失败：
+#   Could not load model BAAI/bge-small-zh-v1.5 from any source.
+os.environ.setdefault("HF_ENDPOINT", settings.hf_endpoint)
+# 镜像的元数据请求偶发很慢（实测出现过 30 秒以上无响应），默认 10 秒的超时会误判成
+# 下载失败。这两个值同样只在 import 时读取一次，所以必须和 HF_ENDPOINT 放在一起。
+os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
+os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "60")
+
+from fastembed import TextEmbedding  # noqa: E402
 
 
 class EmbeddingModelError(RuntimeError):
     """Raised when the local embedding model cannot be loaded or executed."""
 
 
+# 直接用 fastembed 内置条目，不再重定向到自定义别名。
+#
+# 内置条目同时带 hf 与 url 两个源，fastembed 的取源顺序是「先 HuggingFace，失败再退
+# GCS」；而自定义别名（easy-teach/bge-small-zh-v1.5，只有 GCS 一个源）会把
+# HuggingFace 这一路整条跳过 —— 于是可用的镜像通道被自己关掉了。
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-zh-v1.5"
-DIRECT_EMBEDDING_MODEL = "easy-teach/bge-small-zh-v1.5"
-DIRECT_EMBEDDING_URL = (
-    "https://storage.googleapis.com/qdrant-fastembed/fast-bge-small-zh-v1.5.tar.gz"
-)
-
-
-def _register_direct_embedding_model() -> None:
-    if any(
-        item["model"].lower() == DIRECT_EMBEDDING_MODEL.lower()
-        for item in TextEmbedding.list_supported_models()
-    ):
-        return
-    TextEmbedding.add_custom_model(
-        model=DIRECT_EMBEDDING_MODEL,
-        pooling=PoolingType.CLS,
-        normalization=True,
-        sources=ModelSource(url=DIRECT_EMBEDDING_URL, _deprecated_tar_struct=True),
-        dim=512,
-        model_file="model_optimized.onnx",
-        description="Chinese BGE small v1.5 via the Qdrant FastEmbed mirror",
-        license="mit",
-        size_in_gb=0.09,
-    )
-
-
-_register_direct_embedding_model()
 
 
 @lru_cache(maxsize=4)
 def _get_embedding_model(model_name: str, cache_dir: str, threads: int) -> TextEmbedding:
     try:
         Path(cache_dir).mkdir(parents=True, exist_ok=True)
-        runtime_model_name = (
-            DIRECT_EMBEDDING_MODEL
-            if model_name == DEFAULT_EMBEDDING_MODEL
-            else model_name
-        )
         return TextEmbedding(
-            model_name=runtime_model_name,
+            model_name=model_name,
             cache_dir=cache_dir,
             threads=threads,
             providers=["CPUExecutionProvider"],
         )
     except Exception as exc:
         raise EmbeddingModelError(
-            "向量模型加载失败，请检查服务器网络、磁盘空间和模型缓存后重试"
+            f"向量模型加载失败：无法取得 {model_name}。请确认镜像 "
+            f"HF_ENDPOINT={settings.hf_endpoint} 可达（无法访问 huggingface.co 与 "
+            "storage.googleapis.com 时才需要镜像），并检查磁盘空间与缓存目录后重试"
         ) from exc
 
 

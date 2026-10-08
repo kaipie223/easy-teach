@@ -416,14 +416,34 @@ export function deleteKnowledgeDocument(documentId) {
   return api.delete(`/knowledge/documents/${documentId}`)
 }
 
+/**
+ * 启动知识库索引（默认增量：只处理未就绪/不在当前集合里的文档，无变更时空操作）。
+ *
+ * 后端只负责启动（后台线程里跑），返回时索引还没跑完：结束与进度都看
+ * fetchKnowledgeIndexProgress。所以这里不需要长超时——它过去等的是整次重建，
+ * 十几分钟的任务必然先撞上客户端超时。
+ */
 export function rebuildKnowledgeIndex() {
-  return api.post('/knowledge/index', undefined, { timeout: 10 * 60 * 1000 })
+  return api.post('/knowledge/index')
 }
 
+/**
+ * 查询索引进度。
+ *
+ * 启动接口返回时重建才刚开始跑，中间状态只能靠轮询这个接口。进度由后端从文档字段
+ * 推导，刷新页面后也能接着看到。
+ */
+export function fetchKnowledgeIndexProgress() {
+  return api.get('/knowledge/index/progress')
+}
+
+/** 单本文档的"重新索引"：只重做这一本，其余文档的索引不动，语义与 rebuildKnowledgeIndex 一致 */
 export function indexKnowledgeDocument(documentId) {
-  return api.post(`/knowledge/documents/${documentId}/index`, undefined, { timeout: 10 * 60 * 1000 })
+  return api.post(`/knowledge/documents/${documentId}/index`)
 }
 
 export function searchKnowledge(query, topK = 5) {
-  return api.post('/knowledge/search', { query, top_k: topK })
+  // 一次检索要先把整库读进内存并加载向量模型（冷启动实测十几秒），默认 30s 太紧：
+  // 建完索引后的第一次检索正好落在这条冷路径上。
+  return api.post('/knowledge/search', { query, top_k: topK }, { timeout: 120000 })
 }

@@ -16,16 +16,18 @@ from backend.models.user import User
 from backend.schemas import (
     KnowledgeDocumentInfo,
     KnowledgeDocumentUpdate,
-    KnowledgeIndexResponse,
+    KnowledgeIndexJobInfo,
+    KnowledgeIndexProgress,
+    KnowledgeIndexStatus,
     KnowledgeSearchRequest,
     RAGDocument,
 )
 from backend.services.knowledge import (
-    KnowledgeIndexError,
     KnowledgeValidationError,
     import_document,
+    index_progress,
     invalidate_document_evidence,
-    rebuild_index,
+    start_rebuild,
 )
 from backend.services.rag import search as rag_search
 from backend.services.limits import remaining_storage_bytes
@@ -41,7 +43,12 @@ router = APIRouter()
 
 def _document_info(document: KnowledgeDocument) -> KnowledgeDocumentInfo:
     payload = KnowledgeDocumentInfo.model_validate(document).model_dump()
-    payload["chunk_count"] = int((document.metadata_json or {}).get("chunk_count", 0))
+    metadata = document.metadata_json or {}
+    payload["chunk_count"] = int(metadata.get("chunk_count", 0) or 0)
+    payload["page_count"] = int(metadata.get("page_count", 0) or 0)
+    payload["text_pages"] = int(metadata.get("text_pages", 0) or 0)
+    pages = payload["page_count"]
+    payload["text_coverage"] = round(payload["text_pages"] / pages, 4) if pages else 0.0
     return KnowledgeDocumentInfo.model_validate(payload)
 
 
@@ -154,7 +161,15 @@ def update_document(
         normalized_title = request.title.strip()
         if not normalized_title:
             raise ApiError("知识库文档标题不能为空", code="INVALID_KNOWLEDGE_TITLE", status_code=422)
-        document.title = normalized_title
+        if normalized_title != document.title:
+            document.title = normalized_title
+            # 集合格子里存的 source 是旧标题。不把这一本标回待索引，检索结果会一直
+            # 显示改名前的名称。只在 ready 时才重置：pending/failed 的文档下次索引
+            # 本来就会重做，没必要多写一次库。
+            if document.index_status == "ready":
+                document.index_status = "pending"
+                document.indexed_at = None
+                document.index_namespace = None
     if request.enabled is not None and request.enabled != document.enabled:
         document.enabled = request.enabled
         document.index_status = "pending"
@@ -196,31 +211,58 @@ def delete_document(
     return _document_info(document)
 
 
-@router.post("/index", response_model=KnowledgeIndexResponse)
-def index_documents(
+@router.get("/index/progress", response_model=KnowledgeIndexProgress)
+def get_index_progress(
     db: DBSession = Depends(get_db),
     teacher: User = Depends(require_teacher),
 ):
-    try:
-        return KnowledgeIndexResponse.model_validate(
-            rebuild_index(db, owner_id=teacher.user_id)
-        )
-    except KnowledgeIndexError as exc:
-        raise ApiError(
-            str(exc),
-            code="KNOWLEDGE_INDEX_FAILED",
-            status_code=503,
-            details=exc.details,
-            suggested_action="检查向量模型和网络配置后重试索引",
-        ) from exc
+    """当前索引进度：正在处理的文件、块进度与整体进度。
+
+    重建跑在后台线程里（启动接口只负责启动），所以进度必须能单独查询：
+    界面上"正在处理哪一本、写到第几块"就是靠轮询这个接口拿到的。状态从文档字段推导，
+    所以刷新页面甚至重启进程后读到的仍是同一条进度。
+    """
+    return KnowledgeIndexProgress.model_validate(
+        index_progress(db, owner_id=teacher.user_id)
+    )
 
 
-@router.post("/documents/{document_id}/index", response_model=KnowledgeIndexResponse)
+@router.post("/index", response_model=KnowledgeIndexJobInfo, status_code=202)
+def index_documents(
+    force: bool = Query(default=False),
+    db: DBSession = Depends(get_db),
+    teacher: User = Depends(require_teacher),
+):
+    """启动索引，立刻返回；进度与结果都看 ``/knowledge/index/progress``。
+
+    默认是**增量**：只处理未就绪 / 不在当前集合里的文档，顺带清掉停用、删除文档遗留的
+    块；全部就绪时是空操作，响应里 ``work_pending=false``。``force=true`` 退回全量重建
+    （staged collection + 原子切指针），供脚本与运维使用——换嵌入模型、怀疑索引损坏时
+    才需要。
+
+    索引发分钟级，过去这个接口会一直等它跑完，于是请求总是先被客户端掐断（见
+    KnowledgeIndexJobInfo）。现在请求只负责启动后台线程，失败会落成文档的
+    ``index_status=failed`` 与 ``error_message``，界面据此显示"失败，需重试"。
+    """
+    started, work_pending = start_rebuild(db, owner_id=teacher.user_id, force=force)
+    return KnowledgeIndexJobInfo(
+        status=KnowledgeIndexStatus.INDEXING,
+        started=started,
+        work_pending=work_pending,
+    )
+
+
+@router.post(
+    "/documents/{document_id}/index",
+    response_model=KnowledgeIndexJobInfo,
+    status_code=202,
+)
 def index_document(
     document_id: str,
     db: DBSession = Depends(get_db),
     teacher: User = Depends(require_teacher),
 ):
+    """单本文档的"重新索引"：只重做这一本，其它已建好的索引不受影响。"""
     document = _get_document(db, document_id, teacher.user_id)
     if not document.enabled:
         raise ApiError(
@@ -228,18 +270,25 @@ def index_document(
             code="KNOWLEDGE_DOCUMENT_DISABLED",
             status_code=409,
         )
-    try:
-        return KnowledgeIndexResponse.model_validate(
-            rebuild_index(db, owner_id=teacher.user_id)
-        )
-    except KnowledgeIndexError as exc:
+    if document.error_code == "KNOWLEDGE_PARSE_FAILED":
+        # 解析失败的文档没有证据块，重索引只会空转然后再次失败：直接把原因说清楚，
+        # 而不是让教师盯着一个秒完成的"成功"发懵。
         raise ApiError(
-            str(exc),
-            code="KNOWLEDGE_INDEX_FAILED",
-            status_code=503,
-            details={**exc.details, "document_id": document_id},
-            suggested_action="检查向量模型和网络配置后重试索引",
-        ) from exc
+            "这份文档解析失败（常见于纯图片扫描件），无法建立索引，请先转成可提取文字的版本再重新上传",
+            code="KNOWLEDGE_DOCUMENT_UNPARSABLE",
+            status_code=409,
+            details={"error_message": document.error_message or ""},
+        )
+    started, work_pending = start_rebuild(
+        db,
+        owner_id=teacher.user_id,
+        document_ids=[document.document_id],
+    )
+    return KnowledgeIndexJobInfo(
+        status=KnowledgeIndexStatus.INDEXING,
+        started=started,
+        work_pending=work_pending,
+    )
 
 
 @router.post("/search", response_model=list[RAGDocument])

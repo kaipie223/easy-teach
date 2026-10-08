@@ -234,14 +234,24 @@ def resolve_slide_images(
     return resolved
 
 
-def parse_material(file_type: str, path: Path) -> ParsedMaterial:
-    """Parse supported material formats into searchable, locatable evidence."""
+def parse_material(
+    file_type: str,
+    path: Path,
+    *,
+    max_chars: int = MAX_CHUNK_CHARS,
+) -> ParsedMaterial:
+    """Parse supported material formats into searchable, locatable evidence.
+
+    ``max_chars`` 是分块上限。默认值服务于资料中心（参考资料只作为文本进提示词）；
+    知识库会用更小的值（见 ``settings.knowledge_chunk_chars``），因为那些块要被嵌入，
+    必须落在向量模型的输入窗口内。
+    """
     if file_type == "pdf":
-        return _parse_pdf(path)
+        return _parse_pdf(path, max_chars=max_chars)
     if file_type == "word":
-        return _parse_docx(path)
+        return _parse_docx(path, max_chars=max_chars)
     if file_type == "ppt":
-        return _parse_pptx(path)
+        return _parse_pptx(path, max_chars=max_chars)
     if file_type == "image":
         return _parse_image(path)
     if file_type == "video":
@@ -457,26 +467,37 @@ def _looks_like_video(content: bytes) -> bool:
     return content[4:8] == b"ftyp"
 
 
-def _parse_pdf(path: Path) -> ParsedMaterial:
+def _parse_pdf(path: Path, *, max_chars: int = MAX_CHUNK_CHARS) -> ParsedMaterial:
     chunks: list[ParsedChunk] = []
     pages: list[str] = []
+    # 有字的页数单独计数：整本扫描件（一页都抽不出字）导入后会"成功但零块"，
+    # 只靠 chunk_count 看不出来，抽字率才是能一眼发现问题的那项指标。
+    text_pages = 0
     with fitz.open(path) as document:
         for page_number, page in enumerate(document, start=1):
             text = page.get_text("text").strip()
             if not text:
                 continue
+            text_pages += 1
             pages.append(text)
-            chunks.extend(_chunks(text, {"page": page_number}, {"format": "pdf"}))
+            chunks.extend(
+                _chunks(text, {"page": page_number}, {"format": "pdf"}, max_chars=max_chars)
+            )
         page_count = len(document)
     return ParsedMaterial(
         text_content="\n\n".join(pages),
         chunks=chunks,
-        result_json={"format": "pdf", "page_count": page_count, "chunk_count": len(chunks)},
+        result_json={
+            "format": "pdf",
+            "page_count": page_count,
+            "text_pages": text_pages,
+            "chunk_count": len(chunks),
+        },
         page_count=page_count,
     )
 
 
-def _parse_docx(path: Path) -> ParsedMaterial:
+def _parse_docx(path: Path, *, max_chars: int = MAX_CHUNK_CHARS) -> ParsedMaterial:
     document = Document(path)
     chunks: list[ParsedChunk] = []
     blocks: list[str] = []
@@ -484,7 +505,9 @@ def _parse_docx(path: Path) -> ParsedMaterial:
         text = paragraph.text.strip()
         if text:
             blocks.append(text)
-            chunks.extend(_chunks(text, {"paragraph": index}, {"format": "docx"}))
+            chunks.extend(
+                _chunks(text, {"paragraph": index}, {"format": "docx"}, max_chars=max_chars)
+            )
 
     for table_index, table in enumerate(document.tables, start=1):
         rows = [" | ".join(cell.text.strip().replace("\n", " ") for cell in row.cells) for row in table.rows]
@@ -496,6 +519,7 @@ def _parse_docx(path: Path) -> ParsedMaterial:
                     table_text,
                     {"table": table_index},
                     {"format": "docx", "content_type": "table"},
+                    max_chars=max_chars,
                 )
             )
 
@@ -506,7 +530,7 @@ def _parse_docx(path: Path) -> ParsedMaterial:
     )
 
 
-def _parse_pptx(path: Path) -> ParsedMaterial:
+def _parse_pptx(path: Path, *, max_chars: int = MAX_CHUNK_CHARS) -> ParsedMaterial:
     presentation = Presentation(path)
     chunks: list[ParsedChunk] = []
     slides: list[str] = []
@@ -516,7 +540,9 @@ def _parse_pptx(path: Path) -> ParsedMaterial:
         if not text:
             continue
         slides.append(text)
-        chunks.extend(_chunks(text, {"slide": slide_number}, {"format": "pptx"}))
+        chunks.extend(
+            _chunks(text, {"slide": slide_number}, {"format": "pptx"}, max_chars=max_chars)
+        )
     return ParsedMaterial(
         text_content="\n\n".join(slides),
         chunks=chunks,
@@ -694,11 +720,17 @@ def _video_evidence_to_chunk(item) -> ParsedChunk:
     return ParsedChunk(text=item.content, locator=locator, metadata=metadata)
 
 
-def _chunks(text: str, locator: dict, metadata: dict) -> list[ParsedChunk]:
+def _chunks(
+    text: str,
+    locator: dict,
+    metadata: dict,
+    *,
+    max_chars: int = MAX_CHUNK_CHARS,
+) -> list[ParsedChunk]:
     normalized = " ".join(text.split())
     if not normalized:
         return []
-    parts = [normalized[index : index + MAX_CHUNK_CHARS] for index in range(0, len(normalized), MAX_CHUNK_CHARS)]
+    parts = [normalized[index : index + max_chars] for index in range(0, len(normalized), max_chars)]
     return [
         ParsedChunk(
             text=part,

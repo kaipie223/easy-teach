@@ -451,20 +451,46 @@ GET    /api/v1/knowledge/documents
 POST   /api/v1/knowledge/documents              # multipart import
 PATCH  /api/v1/knowledge/documents/{id}        # title/enabled
 DELETE /api/v1/knowledge/documents/{id}        # soft delete
-POST   /api/v1/knowledge/index                  # rebuild enabled docs
-POST   /api/v1/knowledge/documents/{id}/index   # rebuild and verify one doc
+GET    /api/v1/knowledge/index/progress         # current index progress
+POST   /api/v1/knowledge/index?force=false      # start incremental index (202)
+POST   /api/v1/knowledge/documents/{id}/index   # reindex one document (202)
 POST   /api/v1/knowledge/search                 # authenticated retrieval
 ```
 
 Import persists the document and immutable `evidence_chunks` first. Every
-operation requires a teacher account and filters by `owner_id`. Indexing rebuilds
+operation requires a teacher account and filters by `owner_id`. Indexing maintains
 that teacher's `knowledge_user_<user_id>` Chroma collection from enabled, valid
 evidence and preserves `evidence_id`, document ID and locator metadata in retrieval
 results. Administrators cannot read, upload, index or search teacher knowledge.
-A model download or embedding failure marks affected documents as
-`failed`; the same index endpoint can be retried after the model service is
-available. The current implementation is a synchronous request with a long
-client timeout; Celery progress reporting remains a later task milestone.
+
+`POST /knowledge/index` is incremental by default: it embeds only documents that
+are not `ready` or that are not in the current active collection, and removes the
+chunks left behind by disabled or deleted documents. When there is nothing to do it
+returns `202` with `work_pending: false` and starts no background task.
+`force=true` falls back to the full rebuild (a staged collection plus an atomic
+pointer swap) — also the automatic path on first use, and whenever the active
+collection is missing or empty, since incremental writes need a usable collection
+to append to. `POST /knowledge/documents/{id}/index` reindexes just that document
+and leaves every other document's chunks untouched; it returns `409` with
+`KNOWLEDGE_DOCUMENT_DISABLED` for a disabled document and `409` with
+`KNOWLEDGE_DOCUMENT_UNPARSABLE` for one whose import-time parse failed. Renaming a
+`ready` document resets it to `pending`, so the next index run refreshes the stored
+`source` metadata.
+
+Both index endpoints return `202` as soon as a background task starts — a full
+rebuild takes tens of minutes, so the response only reports the start (a request
+while one is already running returns `started: false` instead of blocking or
+queueing a second run). Progress and the outcome are read from
+`GET /api/v1/knowledge/index/progress`: `stage`, `percent` and the document
+currently being written are derived from persisted document fields, so a page
+reload or a different worker process reads the same state, and a run that stops
+updating is reported as `stalled`. `run_documents`, `run_written_chunks` and
+`current_document_position` describe the current run, which under incremental
+indexing may cover only a few documents; `ready_documents`/`total_documents` and
+`written_chunks`/`total_chunks` remain whole-library totals (ready documents count
+as fully written). An embedding failure marks only the documents that did not
+finish as `failed` with `error_code`/`error_message`; documents already indexed stay
+`ready`, and the same index endpoint can be retried afterwards.
 
 ## Courseware blueprint contract
 

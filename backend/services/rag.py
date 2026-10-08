@@ -56,6 +56,26 @@ async def search(query: str, top_k: int = 5, *, owner_id: str | None) -> list[RA
     return await run_in_threadpool(partial(search_sync, query, top_k, owner_id=owner_id))
 
 
+def warm_retriever(owner_id: str | None) -> None:
+    """先把检索器建起来并跑一次最小查询。
+
+    冷启动（构建 RAGRetriever：打开 Chroma、把整库读进内存、加载 HNSW 索引，再初始化
+    向量模型）实测十几秒，而它过去落在**教师第一次点"检索"**的那一刻——那正是最不该
+    让人等的地方，也贴着检索接口的等待上限。放在重建刚结束时预热，这段时间没有人在等。
+
+    预热失败不改变任何状态：检索路径本来就有空索引兜底，下一次真正检索会自己再建一次。
+    """
+    if not owner_id:
+        return
+    try:
+        _get_retriever(owner_id).search("预热", 1)
+    except FileNotFoundError:
+        # 还没有建过索引的账号走这里，属于正常情况。
+        pass
+    except Exception:
+        logger.warning("RAG 预热失败（不影响检索本身）", exc_info=True)
+
+
 def reset_retriever(owner_id: str | None = None) -> None:
     """Reset the process cache for tests and after rebuilding the index."""
     if owner_id is None:

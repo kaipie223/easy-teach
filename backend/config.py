@@ -152,8 +152,17 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("ANONYMIZED_TELEMETRY", "CHROMA_ANONYMIZED_TELEMETRY"),
     )
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
+    # 向量模型下载源。huggingface.co 与 storage.googleapis.com 在国内网络都不可达，
+    # 默认走 hf-mirror（只影响"把模型拉下来"，模型本身是本地 ONNX，推理不联网）。
+    # 有代理时改成自己的镜像地址即可（须在进程导入 fastembed 之前生效）。
+    hf_endpoint: str = "https://hf-mirror.com"
     embedding_cache_dir: Path = PROJECT_ROOT / "data" / "embedding-models"
     embedding_threads: int = Field(default=2, ge=1, le=8)
+    # 知识库分块上限（字符）。向量模型 bge-small-zh 的输入窗口是 512 token（约 500–700
+    # 汉字），块超过窗口会在嵌入时被静默截断 —— 块的后半段在向量召回里等于不存在，
+    # 只有关键词那一路能兜住。资料中心的参考资料不进向量库、只作为文本喂给模型，
+    # 所以那边仍用 materials.MAX_CHUNK_CHARS（1200）；这里只管知识库。
+    knowledge_chunk_chars: int = Field(default=600, ge=200, le=2000)
 
     model_config = SettingsConfigDict(
         env_file=".env",
