@@ -33,13 +33,22 @@ from .segmenter import build_segments_and_evidence
 from .shot_detector import ShotDetectionConfig, ShotDetectionError, ShotSegmentData, detect_shots
 from .transcription import TranscriptionError, transcribe_audio
 from .utils import ensure_dir, file_sha1, json_path, safe_stem, timecode
-from .vision import BailianVisionClient, BailianVisionError, VisionNotConfiguredError
+from .vision import (
+    BailianVisionClient,
+    BailianVisionConfig,
+    BailianVisionError,
+    VisionNotConfiguredError,
+)
 from .video_alignment import align_video_understanding
 from .video_cache import VideoUnderstandingCache
 from .video_understanding import BailianVideoClient, BailianVideoConfig, BailianVideoError
 
 ProgressCallback = Callable[..., None]
 PARSER_VERSION = "0.3.0"
+
+
+class VideoParserBudgetError(RuntimeError):
+    """Raised before provider calls when a video exceeds configured budgets."""
 
 
 def parse_video(
@@ -65,6 +74,26 @@ def parse_video(
 
     _report_progress(progress_callback, "preparing", "已接收视频，准备读取元信息", 5)
     metadata = probe_video(source_path)
+    if metadata.duration_seconds > options.video_max_duration_seconds:
+        raise VideoParserBudgetError(
+            "Video duration exceeds the configured parser limit "
+            f"({metadata.duration_seconds:.3f}s > {options.video_max_duration_seconds:.3f}s)."
+        )
+    if options.video_understanding:
+        effective_chunk_seconds = min(
+            options.video_chunk_seconds,
+            options.video_max_frames / options.video_fps,
+        )
+        planned_chunks = _video_chunk_ranges(
+            metadata.duration_seconds,
+            effective_chunk_seconds,
+            options.video_chunk_overlap_seconds,
+        )
+        if len(planned_chunks) > options.video_max_chunks:
+            raise VideoParserBudgetError(
+                "Video understanding would exceed the configured chunk-call budget "
+                f"({len(planned_chunks)} > {options.video_max_chunks})."
+            )
     _report_progress(
         progress_callback,
         "metadata",
@@ -486,10 +515,17 @@ def _run_video_understanding(
     with the already-produced local parse inputs.
     """
 
-    _report_progress(progress_callback, "video_understanding", "准备 qwen3.7-plus 全局视频理解", 76, {"status": "starting"})
-    base_config = BailianVideoConfig.from_env()
+    _report_progress(
+        progress_callback,
+        "video_understanding",
+        f"准备 {options.video_model} 全局视频理解",
+        76,
+        {"status": "starting", "model": options.video_model},
+    )
+    base_config = BailianVideoConfig.from_env(api_key_file=options.bailian_api_key_file)
     config = replace(
         base_config,
+        base_url=options.dashscope_base_url.rstrip("/"),
         model=options.video_model,
         input_mode=options.video_input_mode,
         fps=options.video_fps,
@@ -498,6 +534,8 @@ def _run_video_understanding(
         chunk_overlap_seconds=options.video_chunk_overlap_seconds,
         timeout_seconds=options.video_timeout_seconds,
         max_retries=options.video_max_retries,
+        max_output_tokens=options.video_max_output_tokens,
+        max_base64_bytes=options.video_max_base64_bytes,
         strict_schema=options.video_strict_schema,
         cache_enabled=options.video_cache_enabled,
         cache_dir=run_dir / "video_understanding_cache" if options.video_cache_enabled else None,
@@ -508,7 +546,7 @@ def _run_video_understanding(
     try:
         client = BailianVideoClient(config=config, cache=cache)
     except BailianVideoError as exc:
-        message = f"qwen3.7-plus 视频理解不可用，已降级旧本地流程：{_safe_video_error(exc)}"
+        message = f"{options.video_model} 视频理解不可用，已降级旧本地流程：{_safe_video_error(exc)}"
         _handle_warning_or_raise(options, warnings, message, exc)
         failed = VideoUnderstandingResult(status="failed", warnings=[message])
         _report_progress(progress_callback, "video_understanding", message, 78, {"status": "unavailable", "degraded": True})
@@ -573,7 +611,7 @@ def _run_video_understanding(
             _report_progress(
                 progress_callback,
                 "video_understanding",
-                f"qwen3.7-plus 已完成第 {chunk_index}/{len(chunk_ranges)} 个视频分段",
+                f"{options.video_model} 已完成第 {chunk_index}/{len(chunk_ranges)} 个视频分段",
                 76 + round(chunk_index / max(1, len(chunk_ranges)) * 5),
                 {
                     "status": "completed",
@@ -609,7 +647,10 @@ def _run_video_understanding(
                     review_required=True,
                 )
             )
-            message = f"qwen3.7-plus 分段 {chunk_index} 失败，保留其他分段：{_safe_video_error(exc)}"
+            message = (
+                f"{options.video_model} 分段 {chunk_index} 失败，"
+                f"保留其他分段：{_safe_video_error(exc)}"
+            )
             warnings.append(message)
             if options.strict:
                 raise
@@ -617,7 +658,7 @@ def _run_video_understanding(
             chunk_artifacts.append(chunk_artifact)
 
     if not chapter_results:
-        message = "qwen3.7-plus 未返回可用分段，已降级旧本地流程。"
+        message = f"{options.video_model} 未返回可用分段，已降级旧本地流程。"
         warnings.append(message)
         failed = VideoUnderstandingResult(status="failed", warnings=[message])
         return failed, chunk_conflicts, [], [], [], {
@@ -662,6 +703,7 @@ def _run_video_understanding(
                 config=RefinementConfig(
                     max_intervals=options.video_max_refinement_intervals,
                     max_frames_per_interval=options.video_max_refinement_frames,
+                    max_visual_frames_per_interval=options.video_max_visual_frames_per_interval,
                     output_width=options.output_width,
                     # The opt-in video-understanding flow includes local
                     # second-pass verification by default.  The explicit
@@ -674,7 +716,11 @@ def _run_video_understanding(
                     strict=options.strict,
                 ),
                 ocr_client_factory=(lambda: TencentOCRClient()) if options.ocr else None,
-                vision_client_factory=(lambda: BailianVisionClient()) if options.vision else None,
+                vision_client_factory=(
+                    lambda: BailianVisionClient(config=_vision_config(options))
+                )
+                if options.vision
+                else None,
                 progress_callback=lambda phase, message, details: _report_progress(
                     progress_callback, phase, message, 84, details
                 ),
@@ -905,7 +951,7 @@ def _run_vision(
         _report_progress(progress_callback, "vision", "没有可供视觉模型分析的关键帧", 90, {"status": "no_keyframes"})
         return [], {"status": "no_keyframes", "keyframes_processed": 0, "evidence_count": 0}
     try:
-        client = BailianVisionClient()
+        client = BailianVisionClient(config=_vision_config(options))
     except (VisionNotConfiguredError, BailianVisionError) as exc:
         _handle_warning_or_raise(options, warnings, f"百炼视觉模型未执行，基础解析已保留：{exc}", exc)
         _report_progress(progress_callback, "vision", "百炼视觉模型配置不可用，已保留基础结果", 90, {"status": "unavailable"})
@@ -977,6 +1023,18 @@ def _run_vision(
         "failed_keyframes": failed,
         "usage": aggregate_usage,
     }
+
+
+def _vision_config(options: VideoParseOptions) -> BailianVisionConfig:
+    base_config = BailianVisionConfig.from_env(api_key_file=options.bailian_api_key_file)
+    return replace(
+        base_config,
+        base_url=options.dashscope_base_url.rstrip("/"),
+        model=options.vision_model,
+        timeout_seconds=options.vision_timeout_seconds,
+        max_retries=options.vision_max_retries,
+        max_output_tokens=options.vision_max_output_tokens,
+    )
 
 
 def _ocr_metadata(response: OCRResponse, action: str) -> dict:

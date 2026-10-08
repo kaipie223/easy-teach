@@ -154,6 +154,59 @@ def test_video_upload_is_queued_for_async_parser(client, tmp_path, monkeypatch):
     assert evidence.json() == []
 
 
+def test_duplicate_video_is_rejected_but_other_teacher_is_isolated(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
+    monkeypatch.setattr(settings, "video_parser_enabled", True)
+    monkeypatch.setattr(
+        "backend.routers.materials.enqueue_material_analysis",
+        lambda analysis_id, **_kwargs: analysis_id,
+    )
+    video = b"\x00\x00\x00\x18ftypmp42same-video"
+
+    first_headers = register(client, "m3-video-first@example.com")
+    first_project = client.post(
+        "/api/v1/projects",
+        headers=first_headers,
+        json={"title": "教师一视频"},
+    ).json()
+    first = client.post(
+        f"/api/v1/projects/{first_project['project_id']}/materials",
+        headers=first_headers,
+        files={"file": ("lesson.mp4", video, "video/mp4")},
+    )
+    assert first.status_code == 201
+
+    duplicate = client.post(
+        f"/api/v1/projects/{first_project['project_id']}/materials",
+        headers=first_headers,
+        files={"file": ("renamed.mp4", video, "video/mp4")},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "VIDEO_MATERIAL_EXISTS"
+    assert duplicate.json()["error"]["details"]["material_id"] == first.json()["material_id"]
+
+    second_headers = register(client, "m3-video-second@example.com")
+    second_project = client.post(
+        "/api/v1/projects",
+        headers=second_headers,
+        json={"title": "教师二视频"},
+    ).json()
+    second = client.post(
+        f"/api/v1/projects/{second_project['project_id']}/materials",
+        headers=second_headers,
+        files={"file": ("lesson.mp4", video, "video/mp4")},
+    )
+    assert second.status_code == 201
+
+    assert (
+        client.get(
+            f"/api/v1/materials/{first.json()['material_id']}/analysis",
+            headers=second_headers,
+        ).status_code
+        == 404
+    )
+
+
 def test_invalid_video_content_is_rejected_before_parser(client, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "upload_dir", tmp_path / "uploads")
     headers = register(client, "m3-invalid-video@example.com")

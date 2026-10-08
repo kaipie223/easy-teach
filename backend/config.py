@@ -144,6 +144,41 @@ class Settings(BaseSettings):
     video_parser_max_keyframes: int = 12
     video_parser_max_shots: int = 36
     video_parser_output_width: int = 960
+    video_parser_max_duration_seconds: int = Field(default=3600, ge=1)
+    video_parser_task_time_limit_seconds: int = Field(default=1800, ge=60)
+    video_parser_task_soft_time_limit_seconds: int = Field(default=1740, ge=30)
+    video_parser_daily_user_limit: int = Field(default=10, ge=1)
+
+    # Alibaba Cloud Bailian video understanding. The credential path is
+    # intentionally passed only to the worker in production Compose.
+    bailian_api_key_file: Path | None = None
+    dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    video_model: str = "qwen3.7-plus"
+    video_input_mode: str = "file_url"
+    video_fps: float = Field(default=1.0, gt=0)
+    video_max_frames: int = Field(default=1800, ge=1)
+    video_chunk_seconds: float = Field(default=1800.0, gt=0)
+    video_chunk_overlap_seconds: float = Field(default=15.0, ge=0)
+    video_max_chunks: int = Field(default=4, ge=1)
+    video_timeout_seconds: int = Field(default=300, ge=10)
+    video_max_retries: int = Field(default=1, ge=0, le=1)
+    video_max_output_tokens: int = Field(default=4096, ge=256)
+    video_max_base64_bytes: int = Field(default=12 * 1024 * 1024, ge=1)
+    video_strict_schema: bool = True
+    video_cache_enabled: bool = True
+    video_prompt_version: str = "video-understanding-v1"
+    video_schema_version: str = "video-understanding-v1"
+    video_max_refinement_intervals: int = Field(default=6, ge=0)
+    video_max_refinement_frames: int = Field(default=12, ge=1)
+
+    # Bailian single-frame verification. A successful full-video parse can
+    # spend at most intervals * frames logical vision calls (6 * 4 by default).
+    bailian_vision_model: str = "qwen3.7-plus"
+    bailian_vision_timeout_seconds: int = Field(default=90, ge=10)
+    bailian_vision_max_retries: int = Field(default=1, ge=0, le=1)
+    bailian_vision_max_output_tokens: int = Field(default=1800, ge=256)
+    video_parser_vision_max_keyframes: int = Field(default=4, ge=1)
+    video_max_visual_frames_per_interval: int = Field(default=4, ge=1)
 
     # ChromaDB
     chroma_persist_dir: Path = PROJECT_ROOT / "data" / "chroma"
@@ -193,6 +228,19 @@ class Settings(BaseSettings):
             path = getattr(self, field_name)
             if not path.is_absolute():
                 setattr(self, field_name, (PROJECT_ROOT / path).resolve())
+
+        if self.bailian_api_key_file is not None and not self.bailian_api_key_file.is_absolute():
+            self.bailian_api_key_file = (PROJECT_ROOT / self.bailian_api_key_file).resolve()
+
+        if self.video_input_mode not in {"file_url", "base64"}:
+            raise ValueError("VIDEO_INPUT_MODE must be file_url or base64 for managed uploads")
+        if self.video_chunk_overlap_seconds >= self.video_chunk_seconds:
+            raise ValueError("VIDEO_CHUNK_OVERLAP_SECONDS must be smaller than VIDEO_CHUNK_SECONDS")
+        if self.video_parser_task_soft_time_limit_seconds >= self.video_parser_task_time_limit_seconds:
+            raise ValueError(
+                "VIDEO_PARSER_TASK_SOFT_TIME_LIMIT_SECONDS must be smaller than "
+                "VIDEO_PARSER_TASK_TIME_LIMIT_SECONDS"
+            )
 
         # ASCII 重定向只是开发便利（仓库路径可能含中文，hnswlib 建不了非 ASCII 索引）；
         # 生产环境 chroma 必须落在 DATA_DIR 内（下方有硬校验），重定向到盘根会出界，

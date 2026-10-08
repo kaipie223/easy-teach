@@ -6,6 +6,9 @@ test('teacher can register, create a project, and enter course chat', async ({ p
   const email = `playwright-${suffix}@example.com`
   let projectId = null
   let token = null
+  let videoUploaded = false
+  let videoMaterialPolls = 0
+  let videoUploadPosts = 0
   const consoleErrors = []
   const bootstrappedSessions = new Set()
   let startRequests = 0
@@ -223,7 +226,37 @@ test('teacher can register, create a project, and enter course chat', async ({ p
     expect(startRequests).toBe(1)
 
     await page.route(new RegExp(`/api/v1/projects/${projectId}/materials$`), async (route) => {
+      if (route.request().method() === 'POST') {
+        videoUploaded = true
+        videoMaterialPolls = 0
+        videoUploadPosts += 1
+        await route.fulfill({
+          status: 201,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            material_id: 'm_e2e_video',
+            original_name: '视觉教学.mp4',
+            file_type: 'video',
+            size_bytes: 23,
+            status: 'queued',
+            created_at: new Date().toISOString(),
+          }),
+        })
+        return
+      }
       if (route.request().method() !== 'GET') return route.continue()
+      if (videoUploaded) videoMaterialPolls += 1
+      const videoStatus = videoMaterialPolls <= 1
+        ? 'queued'
+        : videoMaterialPolls === 2 ? 'processing' : 'ready'
+      const videoRows = videoUploaded ? [{
+        material_id: 'm_e2e_video',
+        original_name: '视觉教学.mp4',
+        file_type: 'video',
+        size_bytes: 23,
+        status: videoStatus,
+        created_at: new Date().toISOString(),
+      }] : []
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -234,7 +267,7 @@ test('teacher can register, create a project, and enter course chat', async ({ p
           size_bytes: 4096,
           status: 'ready',
           created_at: new Date().toISOString(),
-        }]),
+        }, ...videoRows]),
       })
     })
     await page.route(/\/api\/v1\/materials\/m_e2e_material\/bindings$/, async (route) => {
@@ -250,12 +283,27 @@ test('teacher can register, create a project, and enter course chat', async ({ p
         ]),
       })
     })
+    await page.route(/\/api\/v1\/materials\/m_e2e_video\/bindings$/, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' })
+    })
+    await page.route(/\/api\/v1\/materials\/m_e2e_video\/evidence$/, async (route) => {
+      const evidence = videoMaterialPolls >= 3 ? [{
+        evidence_id: 'e_e2e_video',
+        text: 'AI 视频理解候选（待教师复核）：画面展示梯度下降步骤。',
+        locator_json: { timestamp: '00:00:03.000' },
+      }] : []
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(evidence),
+      })
+    })
 
     await page.goto('/materials')
     await expect(page.getByRole('heading', { name: '资料中心' })).toBeVisible()
     await expect(page.locator('#materials-project')).toHaveCount(0)
     await expect(page.locator('.top-bar').getByText('Playwright 课程', { exact: true })).toBeVisible()
-    await expect(page.getByText(/视觉与视频解析暂未启用/)).toBeVisible()
+    await expect(page.getByText(/第一阶段只理解画面/)).toBeVisible()
     await expect(page.locator('.evidence-list .evidence-card')).toHaveCount(2)
     const evidenceRows = await page.locator('.evidence-list .evidence-card').evaluateAll(cards => cards.map(card => {
       const rect = card.getBoundingClientRect()
@@ -265,7 +313,22 @@ test('teacher can register, create a project, and enter course chat', async ({ p
     expect(evidenceRows[1].x).toBe(evidenceRows[0].x)
     expect(evidenceRows[1].width).toBe(evidenceRows[0].width)
     const acceptedTypes = await page.locator('input[type="file"]').getAttribute('accept')
-    expect(acceptedTypes).not.toContain('.mp4')
+    expect(acceptedTypes).toContain('.mp4')
+    expect(acceptedTypes).toContain('.mov')
+
+    const videoFile = {
+      name: '视觉教学.mp4',
+      mimeType: 'video/mp4',
+      buffer: Buffer.from('\x00\x00\x00\x18ftypmp42video-bytes'),
+    }
+    await page.locator('input[type="file"]').setInputFiles(videoFile)
+    await expect(page.getByText('排队中', { exact: true })).toBeVisible()
+    await expect(page.getByText('解析中', { exact: true })).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByText('已解析', { exact: true })).toHaveCount(2, { timeout: 10_000 })
+    await expect(page.getByText(/AI 视频理解候选（待教师复核）/)).toBeVisible()
+    await page.locator('input[type="file"]').setInputFiles(videoFile)
+    await expect(page.getByText(/同一视频已在当前项目中/)).toBeVisible()
+    expect(videoUploadPosts).toBe(1)
     await page.goto('/requirements')
     await expect(page).toHaveURL(chatUrl)
     await expect(page.getByText('课程主题', { exact: true })).not.toBeVisible()

@@ -16,7 +16,7 @@ from backend.config import settings
 from backend.core.errors import ApiError
 from backend.models.file import FileRecord
 from backend.models.knowledge import KnowledgeDocument
-from backend.models.material import Material
+from backend.models.material import Material, MaterialAnalysis
 from backend.models.task import Task
 from backend.models.versioning import ExportRecord
 
@@ -128,6 +128,28 @@ def consume_model_quota(user_id: str) -> None:
         )
 
 
+def consume_video_parse_quota(user_id: str) -> None:
+    """Reserve one daily video parse for a teacher before enqueueing work."""
+
+    now = datetime.now(timezone.utc)
+    tomorrow = datetime.combine(
+        now.date() + timedelta(days=1),
+        datetime.min.time(),
+        tzinfo=timezone.utc,
+    )
+    ttl = max(int((tomorrow - now).total_seconds()), 1)
+    key = f"easy-teach:video-parse:{user_id}:{now.date().isoformat()}"
+    count, _ = _increment(key, window_seconds=ttl)
+    if count > settings.video_parser_daily_user_limit:
+        raise ApiError(
+            "今日视频解析额度已用完",
+            code="VIDEO_DAILY_QUOTA_EXCEEDED",
+            status_code=429,
+            details={"daily_limit": settings.video_parser_daily_user_limit},
+            suggested_action="请明日再试或联系管理员调整额度",
+        )
+
+
 def ensure_task_capacity(db: DBSession, user_id: str, requested: int = 1) -> None:
     task_count = db.query(func.count(Task.task_id)).filter(
         Task.user_id == user_id,
@@ -137,7 +159,19 @@ def ensure_task_capacity(db: DBSession, user_id: str, requested: int = 1) -> Non
         ExportRecord.user_id == user_id,
         ExportRecord.status.in_(("pending", "processing")),
     ).scalar() or 0
-    active = int(task_count) + int(export_count)
+    video_count = (
+        db.query(func.count(MaterialAnalysis.analysis_id))
+        .join(Material, Material.material_id == MaterialAnalysis.material_id)
+        .filter(
+            Material.owner_id == user_id,
+            Material.deleted_at.is_(None),
+            MaterialAnalysis.parser_name == "video-parser-model",
+            MaterialAnalysis.status.in_(("pending", "processing")),
+        )
+        .scalar()
+        or 0
+    )
+    active = int(task_count) + int(export_count) + int(video_count)
     if active + requested > settings.max_concurrent_tasks_per_user:
         raise ApiError(
             "当前排队或执行中的任务过多",
